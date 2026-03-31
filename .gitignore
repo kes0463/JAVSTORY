@@ -27,7 +27,9 @@ screenshots/
 
 # test
 test_assets/
-tools/goodbyedpi/**/*.exe, **/*.dll, **/*.sys
+tools/goodbyedpi/**/*.exe
+tools/goodbyedpi/**/*.dll
+tools/goodbyedpi/**/*.sys
 
 # venv
 venv/
