@@ -1,7 +1,7 @@
 import json
 import os
 import cv2
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 def format_time(seconds: float) -> str:
     return str(timedelta(seconds=int(seconds)))
@@ -76,8 +76,10 @@ def _normalize_screenshot_paths_for_spa(
             if os.path.isabs(p):
                 try:
                     snap["screenshot"] = os.path.relpath(p, base).replace("\\", "/")
-                except ValueError:
-                    pass
+                except Exception:
+                    # 다른 드라이브 등으로 relpath 불가한 경우:
+                    # 브라우저가 로컬 절대경로를 읽을 수 없으므로 파일명으로 최소 폴백
+                    snap["screenshot"] = os.path.basename(p).replace("\\", "/")
             else:
                 snap["screenshot"] = p.replace("\\", "/")
 
@@ -130,7 +132,7 @@ def assemble_final_report_v21(
     video_meta = _compute_video_meta(video_path, classified_zones, web_output_dir=web_output_dir)
     web_db = {
         "version": "v2.1",
-        "generated_at": None,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
         "video": video_meta,
         "zones": classified_zones,
         "vlm_results": vlm_results,

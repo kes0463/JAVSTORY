@@ -221,66 +221,6 @@ function wireInteractionsForMaster(masterEntries, cards) {
   updateActive();
 }
 
-(function wireSearchUI({ locations, positions, intensities, onChange }) {
-  const searchInput = el("searchInput");
-  const clearBtn = el("clearSearchBtn");
-  const locSel = el("filterLocation");
-  const posSel = el("filterPosition");
-  const intSel = el("filterIntensity");
-
-  // options
-  function fill(selectEl, items) {
-    const keepFirst = selectEl.querySelector("option[value='']");
-    selectEl.innerHTML = "";
-    if (keepFirst) selectEl.appendChild(keepFirst);
-    for (const v of items) {
-      const opt = document.createElement("option");
-      opt.value = v;
-      opt.textContent = v;
-      selectEl.appendChild(opt);
-    }
-  }
-
-  if (locSel) fill(locSel, locations);
-  if (posSel) fill(posSel, positions);
-  if (intSel) fill(intSel, intensities);
-
-  function emit() {
-    onChange({
-      q: searchInput?.value ?? "",
-      location: locSel?.value ?? "",
-      position: posSel?.value ?? "",
-      intensity: intSel?.value ?? "",
-    });
-  }
-
-  const debounce = (fn, ms) => {
-    let t = null;
-    return () => {
-      if (t) clearTimeout(t);
-      t = setTimeout(fn, ms);
-    };
-  };
-  const debouncedEmit = debounce(emit, 80);
-
-  searchInput?.addEventListener("input", debouncedEmit);
-  locSel?.addEventListener("change", emit);
-  posSel?.addEventListener("change", emit);
-  intSel?.addEventListener("change", emit);
-  clearBtn?.addEventListener("click", () => {
-    if (searchInput) searchInput.value = "";
-    if (locSel) locSel.value = "";
-    if (posSel) posSel.value = "";
-    if (intSel) intSel.value = "";
-    emit();
-  });
-})({
-  locations: [],
-  positions: [],
-  intensities: [],
-  onChange: () => {},
-});
-
 (async function main() {
   try {
     setStatus("데이터 로딩 중...");

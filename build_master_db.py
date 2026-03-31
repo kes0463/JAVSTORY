@@ -70,10 +70,6 @@ def _resolve_to_root_rel(*, base_dir: Path, rel_or_abs: str) -> str | None:
     return _normalize_rel_path(str(rel))
 
 
-def _iter_web_databases() -> list[Path]:
-    raise RuntimeError("factory_root가 필요합니다.")
-
-
 def _iter_web_databases(factory_root: Path) -> list[Path]:
     completed = factory_root / "03_COMPLETED"
     if not completed.exists():
@@ -175,10 +171,6 @@ def _extract_scenes(db: dict, *, web_base_dir: Path, source_tag: str) -> list[di
     # 시간순 정렬(같은 비디오 내 의미가 살아있도록)
     out.sort(key=lambda e: (_safe_text(e.get("video", {}).get("src")), _safe_float(e.get("scene", {}).get("t"), 0.0)))
     return out
-
-
-def build_master_db() -> tuple[list[dict], BuildStats]:
-    raise RuntimeError("factory_root가 필요합니다.")
 
 
 def build_master_db(factory_root: Path) -> tuple[list[dict], BuildStats]:

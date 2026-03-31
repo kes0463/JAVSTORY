@@ -161,7 +161,10 @@ def execute_vlm_strikes(
                         shot_path = os.path.join(screenshots_dir, shot_name)
                         ok = cv2.imwrite(shot_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                         if ok:
-                            result["screenshot"] = os.path.join(screenshots_dir, shot_name).replace("\\", "/")
+                            # 결과 JSON에는 절대경로를 넣지 않는다(브라우저/마스터빌더 호환성).
+                            # screenshots_dir이 어디든, UI 기준으로는 마지막 폴더명(보통 'screenshots') 아래로 참조.
+                            display_dir = os.path.basename(os.path.normpath(screenshots_dir)) or "screenshots"
+                            result["screenshot"] = f"{display_dir}/{shot_name}".replace("\\", "/")
                 except Exception:
                     pass
                 

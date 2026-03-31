@@ -59,7 +59,15 @@ class JAVSceneAnalysisPipelineV21:
         
         # 기본 정보 확보
         cap = cv2.VideoCapture(self.video_path)
-        duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / cap.get(cv2.CAP_PROP_FPS)
+        duration = 0.0
+        try:
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+                frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+                if fps > 0 and frame_count > 0:
+                    duration = float(frame_count / fps)
+        except Exception:
+            duration = 0.0
         cap.release()
         
         if not output_report_path:

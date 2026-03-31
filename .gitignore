@@ -19,11 +19,21 @@ logs/
 # Databases
 *.sqlite3
 *.db
+*.sqlite
+*.sqlite3-journal
+*.db-journal
+*.db-wal
+*.db-shm
 
 # Media
 output/
 data/media/
 screenshots/
+
+# generated web/search artifacts (rebuildable)
+core/scene_analysis_v2/web_database.json
+core/scene_analysis_v2/web_database.js
+master_db.js
 
 # test
 test_assets/
