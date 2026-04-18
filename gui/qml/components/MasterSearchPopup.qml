@@ -2,29 +2,44 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
+import "."
 
 Popup {
     id: root
     modal: true
+    dim: true
     focus: true
     padding: Theme.spacingMd
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
-    width: Math.min(440, Overlay.overlay.width - 48)
+    /** Overlay 미연결 타이밍(중첩 팝업 등)에서 Overlay.overlay 가 null 이면 width 접근 시 TypeError 방지 */
+    readonly property real _innerMaxW: {
+        var o = Overlay.overlay
+        if (o === null || o.width <= 0)
+            return 392
+        return Math.max(120, o.width - 48)
+    }
+    width: Math.min(440, _innerMaxW)
 
     property string pickerMode: "maker" // maker | genre | actress
+
+    readonly property color fieldBg: Theme.isDark ? "#161E34" : "#FFFFFF"
 
     ListModel { id: pickModel }
 
     function refresh() {
         var q = searchField.text
-        var arr
-        if (pickerMode === "maker")
-            arr = LibraryModel.searchMakers(q)
-        else if (pickerMode === "genre")
-            arr = LibraryModel.searchGenres(q)
-        else
-            arr = LibraryModel.searchActresses(q)
+        var arr = []
+        try {
+            if (pickerMode === "maker")
+                arr = LibraryModel.searchMakers(q) || []
+            else if (pickerMode === "genre")
+                arr = LibraryModel.searchGenres(q) || []
+            else
+                arr = LibraryModel.searchActresses(q) || []
+        } catch (e) {
+            arr = []
+        }
 
         pickModel.clear()
         for (var i = 0; i < arr.length; i++) {
@@ -50,7 +65,7 @@ Popup {
 
     background: Rectangle {
         radius: Theme.radiusMd
-        color: Theme.surface
+        color: Theme.bgSecondary
         border.color: Theme.glassBorder
         border.width: 1
     }
@@ -73,6 +88,15 @@ Popup {
             Layout.fillWidth: true
             placeholderText: "검색…"
             selectByMouse: true
+            color: Theme.textPrimary
+            placeholderTextColor: Theme.textMuted
+            font.pixelSize: Theme.fontBody
+            background: Rectangle {
+                radius: Theme.radiusSm
+                color: root.fieldBg
+                border.color: Theme.glassBorder
+                border.width: 1
+            }
             onTextChanged: debounce.restart()
         }
 
@@ -84,26 +108,61 @@ Popup {
         }
 
         ScrollView {
+            id: pickScroll
             Layout.fillWidth: true
             Layout.preferredHeight: 280
             clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
             ListView {
-                model: pickModel
+                id: pickList
+                width: Math.max(1, pickScroll.availableWidth > 8
+                    ? pickScroll.availableWidth
+                    : (root.width - 2 * root.padding))
+                implicitHeight: contentHeight
                 spacing: 4
+                clip: true
+                model: pickModel
+                boundsBehavior: Flickable.StopAtBounds
 
-                delegate: ItemDelegate {
-                    width: ListView.view.width
-                    text: model.line
-                    onClicked: {
-                        if (pickerMode === "maker") {
-                            LibraryModel.applyMakerFields(model.jp, model.ko, model.en)
-                        } else if (pickerMode === "genre") {
-                            LibraryModel.appendGenreKo(model.ko || model.jp)
-                        } else {
-                            LibraryModel.appendActorKo(model.ko || model.jp)
+                delegate: Rectangle {
+                    width: pickList.width
+                    implicitHeight: Math.max(lbl.implicitHeight + 20, 44)
+                    radius: Theme.radiusSm
+                    color: pickMa.containsMouse || pickMa.pressed ? Theme.navHover : "transparent"
+                    border.color: Theme.glassBorder
+                    border.width: 1
+
+                    Label {
+                        id: lbl
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.margins: 10
+                        text: model.line
+                        wrapMode: Text.WordWrap
+                        color: Theme.textPrimary
+                        font.pixelSize: Theme.fontBody
+                    }
+
+                    MouseArea {
+                        id: pickMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            if (pickerMode === "maker") {
+                                LibraryModel.applyMakerFields(model.jp, model.ko, model.en)
+                            } else if (pickerMode === "genre") {
+                                LibraryModel.appendGenreKo(model.ko || model.jp)
+                            } else {
+                                LibraryModel.appendActorFromPick(
+                                    model.ko || model.jp,
+                                    model.jp,
+                                    model.romaji || "")
+                            }
+                            root.close()
                         }
-                        root.close()
                     }
                 }
             }
@@ -112,18 +171,21 @@ Popup {
         RowLayout {
             Layout.fillWidth: true
             spacing: Theme.spacingMd
-            Button {
+            ActionButton {
                 text: pickerMode === "maker" ? "새 메이커 추가…"
                     : (pickerMode === "genre" ? "새 장르 추가…" : "새 배우 추가…")
-                flat: true
+                primary: false
                 onClicked: {
-                    root.close()
+                    njJa.text = ""
+                    njKo.text = ""
+                    njEn.text = ""
                     newEntryPopup.open()
                 }
             }
             Item { Layout.fillWidth: true }
-            Button {
+            ActionButton {
                 text: "닫기"
+                primary: false
                 onClicked: root.close()
             }
         }
@@ -132,15 +194,17 @@ Popup {
     Popup {
         id: newEntryPopup
         modal: true
+        dim: true
         focus: true
         padding: Theme.spacingMd
         parent: Overlay.overlay
         anchors.centerIn: Overlay.overlay
-        width: Math.min(400, Overlay.overlay.width - 48)
+        width: Math.min(400, root._innerMaxW)
+        z: root.z + 1
 
         background: Rectangle {
             radius: Theme.radiusMd
-            color: Theme.surface
+            color: Theme.bgSecondary
             border.color: Theme.glassBorder
             border.width: 1
         }
@@ -157,10 +221,36 @@ Popup {
             }
 
             Label { text: "일본어"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-            TextField { id: njJa; Layout.fillWidth: true; selectByMouse: true }
+            TextField {
+                id: njJa
+                Layout.fillWidth: true
+                selectByMouse: true
+                color: Theme.textPrimary
+                placeholderTextColor: Theme.textMuted
+                font.pixelSize: Theme.fontBody
+                background: Rectangle {
+                    radius: Theme.radiusSm
+                    color: root.fieldBg
+                    border.color: Theme.glassBorder
+                    border.width: 1
+                }
+            }
 
             Label { text: "한국어"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-            TextField { id: njKo; Layout.fillWidth: true; selectByMouse: true }
+            TextField {
+                id: njKo
+                Layout.fillWidth: true
+                selectByMouse: true
+                color: Theme.textPrimary
+                placeholderTextColor: Theme.textMuted
+                font.pixelSize: Theme.fontBody
+                background: Rectangle {
+                    radius: Theme.radiusSm
+                    color: root.fieldBg
+                    border.color: Theme.glassBorder
+                    border.width: 1
+                }
+            }
 
             Label {
                 visible: pickerMode === "maker"
@@ -173,19 +263,27 @@ Popup {
                 visible: pickerMode === "maker"
                 Layout.fillWidth: true
                 selectByMouse: true
+                color: Theme.textPrimary
+                placeholderTextColor: Theme.textMuted
+                font.pixelSize: Theme.fontBody
+                background: Rectangle {
+                    radius: Theme.radiusSm
+                    color: root.fieldBg
+                    border.color: Theme.glassBorder
+                    border.width: 1
+                }
             }
 
             RowLayout {
                 Layout.fillWidth: true
                 Item { Layout.fillWidth: true }
-                Button {
+                ActionButton {
                     text: "취소"
-                    flat: true
+                    primary: false
                     onClicked: newEntryPopup.close()
                 }
-                Button {
+                ActionButton {
                     text: "추가"
-                    highlighted: true
                     onClicked: {
                         if (pickerMode === "maker") {
                             LibraryModel.insertNewMaker(njJa.text, njKo.text, njEn.text)
@@ -195,6 +293,7 @@ Popup {
                             LibraryModel.insertNewActress(njJa.text, njKo.text)
                         }
                         newEntryPopup.close()
+                        root.refresh()
                     }
                 }
             }

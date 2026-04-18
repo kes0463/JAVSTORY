@@ -37,6 +37,7 @@ class DetailEditDraft(QObject):
         self._actors_ko = ""
         self._actors_ja = ""
         self._actors_romaji = ""
+        self._actors_en = ""
 
         self._genres_ko = ""
         self._genres_ja = ""
@@ -67,6 +68,10 @@ class DetailEditDraft(QObject):
         self._actors_ko = _s(getattr(row, "actors_ko", None) or getattr(row, "actors", None))
         self._actors_ja = _s(getattr(row, "actors_ja", None))
         self._actors_romaji = _s(getattr(row, "actors_romaji", None))
+        _en = _s(getattr(row, "actors_en", None))
+        if not _en:
+            _en = _s(getattr(row, "actors_zh_cn", None)) or _s(getattr(row, "actors_zh_tw", None))
+        self._actors_en = _en
 
         self._genres_ko = _s(getattr(row, "genres_ko", None) or getattr(row, "genres", None))
         self._genres_ja = _s(getattr(row, "genres_ja", None))
@@ -99,6 +104,10 @@ class DetailEditDraft(QObject):
         row.actors_ko = self._actors_ko or None
         row.actors_ja = self._actors_ja or None
         row.actors_romaji = self._actors_romaji or None
+        _en = self._actors_en or None
+        row.actors_en = _en
+        row.actors_zh_cn = _en
+        row.actors_zh_tw = _en
         row.actors = self._actors_ko or None
 
         row.genres_ko = self._genres_ko or None
@@ -115,6 +124,64 @@ class DetailEditDraft(QObject):
         row.title = self._title_ko or None
 
         row.release_date = self._release_date or None
+
+    def _split_csv(self, s: str) -> list[str]:
+        if not (s or "").strip():
+            return []
+        return [x.strip() for x in str(s).split(",")]
+
+    def _aligned_actor_lists(self) -> tuple[list[str], list[str], list[str], list[str]]:
+        kos = self._split_csv(self._actors_ko)
+        jas = self._split_csv(self._actors_ja)
+        ros = self._split_csv(self._actors_romaji)
+        ens = self._split_csv(self._actors_en)
+        n = max(len(kos), len(jas), len(ros), len(ens))
+
+        def pad(xs: list[str]) -> list[str]:
+            xs = xs[:n]
+            return xs + [""] * (n - len(xs))
+
+        return pad(kos), pad(jas), pad(ros), pad(ens)
+
+    def _write_actor_lists(self, kos: list[str], jas: list[str], ros: list[str], ens: list[str]) -> None:
+        self._actors_ko = ", ".join(kos)
+        self._actors_ja = ", ".join(jas)
+        self._actors_romaji = ", ".join(ros)
+        self._actors_en = ", ".join(ens)
+        self.draftChanged.emit()
+
+    def append_actor_parallel(
+        self,
+        ko_label: str,
+        ja: str = "",
+        romaji: str = "",
+        en: str = "",
+    ) -> None:
+        """배우 표시(ko)와 동일 인덱스로 ja·로마자·영문(en) 슬롯 유지 — 저장 시 zh_cn/zh_tw는 actors_en 전체와 동일."""
+        lab = _s(ko_label)
+        if not lab:
+            return
+        kos, jas, ros, ens = self._aligned_actor_lists()
+        if lab in kos:
+            return
+        kos.append(lab)
+        jas.append(_s(ja))
+        ros.append(_s(romaji))
+        ens.append(_s(en))
+        self._write_actor_lists(kos, jas, ros, ens)
+
+    def remove_actor_by_ko_label(self, ko_label: str) -> None:
+        remove_label = _s(ko_label)
+        if not remove_label:
+            return
+        kos, jas, ros, ens = self._aligned_actor_lists()
+        idx = next((i for i, k in enumerate(kos) if k == remove_label), None)
+        if idx is None:
+            return
+        for lst in (kos, jas, ros, ens):
+            if idx < len(lst):
+                del lst[idx]
+        self._write_actor_lists(kos, jas, ros, ens)
 
     @Property(str, notify=draftChanged)
     def productCode(self) -> str:
@@ -261,6 +328,17 @@ class DetailEditDraft(QObject):
         v = _s(v)
         if v != self._actors_romaji:
             self._actors_romaji = v
+            self.draftChanged.emit()
+
+    @Property(str, notify=draftChanged)
+    def actorsEn(self) -> str:
+        return self._actors_en
+
+    @actorsEn.setter
+    def actorsEn(self, v: str):
+        v = _s(v)
+        if v != self._actors_en:
+            self._actors_en = v
             self.draftChanged.emit()
 
     @Property(str, notify=draftChanged)

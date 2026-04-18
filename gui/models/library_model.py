@@ -162,6 +162,9 @@ class LibraryModel(QObject):
     sortModeChanged = Signal()
     workCountChanged = Signal()
     detailLoaded = Signal()
+    summariesReloaded = Signal()  # DB 요약·연결 경로 갱신 시 (폴더 감시 목록 리프레시용)
+    # 품번, 사라진 경로, 후보 경로 목록 — 폴더 이동 감시에서 사용자 확인 팝업용
+    folderBindingNeedsReview = Signal(str, str, list)
     
     # 스냅샷 추출 관련 시그널
     snapshotProgress = Signal(int, int) # current, total
@@ -280,10 +283,12 @@ class LibraryModel(QObject):
             finally:
                 session.close()
             self._rebuild()
+            self.summariesReloaded.emit()
             self.toastMessage.emit(f"{len(self._all_summaries)}건 로드", "success")
         except Exception as e:
             self._all_summaries = []
             self._rebuild()
+            self.summariesReloaded.emit()
             self.toastMessage.emit(f"DB 로드 실패: {e}", "error")
 
     @Slot(str)
@@ -420,7 +425,7 @@ class LibraryModel(QObject):
                 self.requestFolderSelection.emit(product_code)
         except Exception as e: self.toastMessage.emit(f"폴더 열기 실패: {e}", "error")
 
-    def _bind_folder_impl(self, product_code: str, folder_path: str, force: bool) -> None:
+    def _bind_folder_impl(self, product_code: str, folder_path: str, force: bool) -> bool:
         try:
             from javstory.utils.product_code import extract_product_code_from_path
             from javstory.harvest.database import get_db_session, JAVMetadata
@@ -430,7 +435,7 @@ class LibraryModel(QObject):
             target_path = Path(folder_path)
             if not target_path.is_dir():
                 self.toastMessage.emit(f"폴더가 없거나 디렉터리가 아닙니다: {folder_path}", "error")
-                return
+                return False
 
             detected_pc = extract_product_code_from_path(target_path)
             if not detected_pc:
@@ -444,7 +449,7 @@ class LibraryModel(QObject):
                     f"선택한 폴더({target_path.name})가 품번 {pc}와 일치하지 않습니다. 강제 연결을 사용하세요.",
                     "error",
                 )
-                return
+                return False
 
             session = get_db_session()
             try:
@@ -458,25 +463,37 @@ class LibraryModel(QObject):
                     else:
                         self.toastMessage.emit(f"폴더 경로가 저장되었습니다: {abs_path}", "success")
                     self.refreshProduct(pc)
+                    self.summariesReloaded.emit()
                     QTimer.singleShot(
                         0,
                         lambda p=pc, fd=abs_path: self._maybe_auto_snapshots_after_folder_bind(p, fd),
                     )
-                else:
-                    self.toastMessage.emit(f"DB에 품번 {pc} 메타데이터가 없습니다.", "error")
+                    return True
+                self.toastMessage.emit(f"DB에 품번 {pc} 메타데이터가 없습니다.", "error")
+                return False
             finally:
                 session.close()
         except Exception as e:
             self.toastMessage.emit(f"폴더 연결 실패: {e}", "error")
+            return False
 
     @Slot(str, str)
     def bindFolder(self, product_code: str, folder_path: str):
         self._bind_folder_impl(product_code, folder_path, False)
 
-    @Slot(str, str, bool)
-    def bindFolderForced(self, product_code: str, folder_path: str, force: bool):
+    @Slot(str, str, bool, result=bool)
+    def bindFolderForced(self, product_code: str, folder_path: str, force: bool) -> bool:
         """force=True면 품번 검증 불일치여도 저장."""
-        self._bind_folder_impl(product_code, folder_path, force)
+        return self._bind_folder_impl(product_code, folder_path, force)
+
+    @Slot(str, str, result=list)
+    def searchFolderBindingCandidates(self, product_code: str, old_path: str) -> list[str]:
+        """라이브러리·미디어 루트에서 품번 폴더 후보 경로를 다시 검색한다 (팝업의 ‘다시 검색’용)."""
+        from gui.folder_watch_service import search_folder_candidates
+
+        pc = (product_code or "").strip().upper()
+        op = (old_path or "").strip()
+        return search_folder_candidates(pc, old_path=op if op else None)
 
     @Slot(str)
     def clearFolderBinding(self, product_code: str):
@@ -494,6 +511,7 @@ class LibraryModel(QObject):
                     session.commit()
                     self.toastMessage.emit("폴더 연결이 해제되었습니다.", "success")
                     self.refreshProduct(pc)
+                    self.summariesReloaded.emit()
                 else:
                     self.toastMessage.emit(f"DB에 품번 {pc}가 없습니다.", "warning")
             finally:
@@ -669,7 +687,7 @@ class LibraryModel(QObject):
             self.toastMessage.emit(f"메이커 추가 실패: {e}", "error")
             return False
 
-    @Slot(str)
+    @Slot(str, result=list)
     def searchMakers(self, query: str):
         try:
             from sqlalchemy import or_
@@ -743,7 +761,7 @@ class LibraryModel(QObject):
         except Exception as e:
             self.toastMessage.emit(f"장르 추가 실패: {e}", "error")
 
-    @Slot(str)
+    @Slot(str, result=list)
     def searchGenres(self, query: str):
         try:
             from sqlalchemy import or_
@@ -799,16 +817,15 @@ class LibraryModel(QObject):
                     return
                 session.add(Actress(japanese=ja, korean=ko or None, romaji=None))
                 session.commit()
-                cur = (self._edit_draft.actorsKo or "").strip()
-                add = ko or ja
-                self._edit_draft.actorsKo = (cur + ", " + add).strip(", ").strip() if cur else add
+                add_ko = ko or ja
+                self._edit_draft.append_actor_parallel(add_ko, ja, "", "")
             finally:
                 session.close()
             self.toastMessage.emit("배우가 추가되었습니다.", "success")
         except Exception as e:
             self.toastMessage.emit(f"배우 추가 실패: {e}", "error")
 
-    @Slot(str)
+    @Slot(str, result=list)
     def searchActresses(self, query: str):
         try:
             from sqlalchemy import or_
@@ -832,21 +849,26 @@ class LibraryModel(QObject):
 
     @Slot(str)
     def appendActorKo(self, label_ko: str):
+        """레거시: 한국어 표시만 추가(ja/로마자 등은 비움). 피커에서는 appendActorFromPick 사용."""
         lab = (label_ko or "").strip()
         if not lab:
             return
-        cur = (self._edit_draft.actorsKo or "").strip()
-        parts = [x.strip() for x in cur.split(",") if x.strip()]
-        if lab not in parts:
-            parts.append(lab)
-        self._edit_draft.actorsKo = ", ".join(parts)
+        self._edit_draft.append_actor_parallel(lab, "", "", "")
+
+    @Slot(str, str, str)
+    def appendActorFromPick(self, label_ko: str, japanese: str, romaji: str):
+        """마스터 배우 목록에서 선택 시 한국어 표시 + 일본어·로마자·영문(en=로마자) 슬롯 기록."""
+        ro = romaji or ""
+        self._edit_draft.append_actor_parallel(
+            label_ko or "",
+            japanese or "",
+            ro,
+            ro,
+        )
 
     @Slot(str)
     def removeActorChip(self, remove_label: str):
-        remove_label = (remove_label or "").strip()
-        cur = (self._edit_draft.actorsKo or "").strip()
-        parts = [x.strip() for x in cur.split(",") if x.strip() and x.strip() != remove_label]
-        self._edit_draft.actorsKo = ", ".join(parts)
+        self._edit_draft.remove_actor_by_ko_label(remove_label or "")
 
     @Slot(str, str)
     def generateSnapshots(self, product_code: str, video_path: str):

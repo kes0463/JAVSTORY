@@ -44,6 +44,10 @@ Item {
 
     property bool keyboardHelpVisible: false
 
+    /** 표지 호버 다이제스트 미리보기 → 라이트박스 전체화면으로 이어 재생할 때(ms) */
+    property int digestResumePositionMs: 0
+    property int digestSeekPollCount: 0
+
     focus: true
 
     function resetDetailFocus() {
@@ -100,6 +104,15 @@ Item {
     function openCoverLightbox() {
         if (LibraryModel.detail.coverPath === "")
             return
+        digestSeekApplyTimer.stop()
+        digestSeekPollCount = 0
+        // 호버 중 다이제스트가 재생 중이면 현재 위치를 풀스크린에 이어 붙임
+        if (coverHoverTimer.runningDigest && LibraryModel.detail.digestPath !== "") {
+            digestResumePositionMs = digestHoverPlayer.position
+            digestHoverPlayer.pause()
+        } else {
+            digestResumePositionMs = 0
+        }
         lightboxOverlay.coverModeDigestActive = coverHoverTimer.runningDigest // 움짤 재생 중이었다면 바로 움짤 풀스크린으로
         lightboxOverlay.coverMode = true
         lightboxOverlay.allViewMode = false
@@ -109,6 +122,9 @@ Item {
     }
 
     function closeLightboxOnly() {
+        digestSeekApplyTimer.stop()
+        digestResumePositionMs = 0
+        digestSeekPollCount = 0
         zoomContainer.scale = 1.0
         zoomContainer.x = 0
         zoomContainer.y = 0
@@ -613,6 +629,7 @@ Item {
             }
             var k = event.key
             var paths = LibraryModel.detail.stillPaths
+            var n = paths.length
 
             if (lightboxOverlay.coverMode) {
                 if (k === Qt.Key_Left && lightboxOverlay.coverModeDigestActive) {
@@ -785,6 +802,31 @@ Item {
                     audioOutput: null // 다이제스트 무당(묵음) 재생 보장
                 }
 
+                Timer {
+                    id: digestSeekApplyTimer
+                    interval: 50
+                    repeat: true
+                    onTriggered: {
+                        root.digestSeekPollCount += 1
+                        var resume = root.digestResumePositionMs
+                        var d = digestFullscreenPlayer.duration
+                        if (resume > 0 && d > 0) {
+                            digestFullscreenPlayer.position = Math.min(
+                                resume,
+                                Math.max(0, d - 100))
+                            root.digestResumePositionMs = 0
+                            digestSeekApplyTimer.stop()
+                            root.digestSeekPollCount = 0
+                            digestFullscreenPlayer.play()
+                        } else if (root.digestSeekPollCount >= 40) {
+                            digestSeekApplyTimer.stop()
+                            root.digestSeekPollCount = 0
+                            root.digestResumePositionMs = 0
+                            digestFullscreenPlayer.play()
+                        }
+                    }
+                }
+
                 VideoOutput {
                     id: digestFullscreenVideo
                     anchors.centerIn: parent
@@ -792,10 +834,22 @@ Item {
                     height: parent.height * 0.95
                     fillMode: VideoOutput.PreserveAspectFit
                     visible: lightboxOverlay.coverMode && lightboxOverlay.coverModeDigestActive
-                    
+
                     onVisibleChanged: {
-                        if (visible) digestFullscreenPlayer.play()
-                        else digestFullscreenPlayer.pause()
+                        if (visible) {
+                            digestFullscreenPlayer.pause()
+                            var resume = root.digestResumePositionMs
+                            if (resume > 0) {
+                                root.digestSeekPollCount = 0
+                                digestSeekApplyTimer.start()
+                            } else {
+                                digestFullscreenPlayer.position = 0
+                                digestFullscreenPlayer.play()
+                            }
+                        } else {
+                            digestSeekApplyTimer.stop()
+                            digestFullscreenPlayer.pause()
+                        }
                     }
                 }
 
@@ -1344,22 +1398,46 @@ Item {
 
                             Item { height: 4 }
 
-                            Row {
+                            RowLayout {
+                                width: parent.width
                                 spacing: 12
                                 visible: LibraryModel.detail.actorsKo !== ""
 
                                 Rectangle {
-                                    width: 3
-                                    height: actorText.height
+                                    Layout.preferredWidth: 3
+                                    Layout.preferredHeight: actorFlow.height > 0 ? actorFlow.height : 18
+                                    Layout.alignment: Qt.AlignTop
                                     color: Theme.accentNeon
                                     radius: 2
-                                    anchors.verticalCenter: parent.verticalCenter
                                 }
-                                SelectableText {
-                                    id: actorText
-                                    text: LibraryModel.detail.actorsKo || ""
-                                    font.pixelSize: Theme.fontBody
-                                    color: Theme.textSecondary
+
+                                Flow {
+                                    id: actorFlow
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    flow: Flow.LeftToRight
+                                    layoutDirection: Qt.LeftToRight
+
+                                    Repeater {
+                                        id: actorRep
+                                        model: {
+                                            var s = LibraryModel.detail.actorsKo || ""
+                                            var parts = s.split(",")
+                                            var out = []
+                                            for (var i = 0; i < parts.length; i++) {
+                                                var t = parts[i].trim()
+                                                if (t.length > 0)
+                                                    out.push(t)
+                                            }
+                                            return out
+                                        }
+
+                                        delegate: Text {
+                                            text: modelData + (index < actorRep.count - 1 ? ", " : "")
+                                            font.pixelSize: Theme.fontBody
+                                            color: Theme.textSecondary
+                                        }
+                                    }
                                 }
                             }
 

@@ -37,6 +37,23 @@ def test_self_subtitle_marker_in_folder_name(tmp_path: Path) -> None:
     assert path_contains_self_subtitle_marker(video, str(folder))
 
 
+def test_plain_bracket_subtitle_tag_not_self_sub(tmp_path: Path) -> None:
+    """`[자막]` 만 있는 파일명은 자체자막 마커가 아님."""
+    folder = tmp_path / "배우별"
+    folder.mkdir()
+    video = folder / "[자막] ABC-001.mp4"
+    video.write_bytes(b"x")
+    assert not path_contains_self_subtitle_marker(video, str(folder))
+
+
+def test_self_subtitle_space_variant(tmp_path: Path) -> None:
+    folder = tmp_path / "작품 [자체 자막]"
+    folder.mkdir()
+    video = folder / "x.mp4"
+    video.write_bytes(b"x")
+    assert path_contains_self_subtitle_marker(video, str(folder))
+
+
 def test_marker_short_circuits_other_lamps(tmp_path: Path) -> None:
     folder = tmp_path / "자체자막_pack"
     folder.mkdir()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -94,38 +95,33 @@ def _first_video_in_dir(d: Path, depth=0) -> Path | None:
 SELF_SUBTITLE_MARKER = "자체자막"
 
 
+# 파일·폴더명에 이 문자열만 있을 때 자체자막 램프 (일반 `[자막]` 태그는 제외)
+_SELF_SUBTITLE_NAME_RE = re.compile(r"자체\s*자막")
+
+
 def path_contains_self_subtitle_marker(video_path: Path | None, folder_path: str | None, product_code: str = "") -> bool:
-    """폴더·파일 이름에 자체자막을 암시하는 키워드가 포함되었는지 정밀 검사 (로그 포함)."""
-    # 감지 패턴을 더 엄격하게 조정 (오탐 방지)
-    patterns = {
-        "KOR_MARKER": re.compile(r"자체\s*자막"),
-        "CH_BRACKET": re.compile(r"[\[\(\s]CH[\]\)\s]", re.I), # [CH], (CH),  CH  등 명확한 태그 형태
-        "CH_SUFFIX": re.compile(r"[-_]CH\b", re.I),           # -CH, _CH 등
-        "CHINESE": re.compile(r"\bChinese\b", re.I),
-        "SUB_BRACKET": re.compile(r"\[\s*자막\s*\]"),
-    }
+    """폴더·파일 이름에「자체자막」「자체 자막」연속 문자열만 허용. `[자막]` 단독 등은 제외."""
 
     target_texts = []
     if video_path:
         target_texts.append(video_path.name)
         target_texts.extend(video_path.parts)
-    
+
     fp = (folder_path or "").strip()
     if fp:
         try:
             p_fp = Path(fp)
             target_texts.append(p_fp.name)
             target_texts.extend(p_fp.parts)
-        except: pass
+        except Exception:
+            pass
 
     for text in target_texts:
-        for name, pat in patterns.items():
-            if pat.search(text):
-                if product_code:
-                    print(f"[Debug] 자체자막 감지 필터 작동! ({product_code})")
-                    print(f"  - 걸린 텍스트: '{text}'")
-                    print(f"  - 감지된 패턴: {name}")
-                return True
+        if _SELF_SUBTITLE_NAME_RE.search(text):
+            if product_code:
+                print(f"[Debug] 자체자막 감지 필터 작동! ({product_code})")
+                print(f"  - 걸린 텍스트: '{text}'")
+            return True
     return False
 
 
@@ -153,6 +149,49 @@ def file_rule_lamp_stt_sub(ja: bool, ko: bool, plain: bool) -> tuple[bool, bool]
     return False, False
 
 
+def _scan_data_media_srt_flags(product_code: str) -> tuple[bool, bool, bool]:
+    """
+    `data/media/<품번>/` 아래 트리에 자막 파일이 있는지.
+    영상 파일을 찾지 못했거나 사이드카와 무관한 위치에 산출물만 있을 때 카드 램프 보강용.
+    """
+    from javstory.config.app_config import MEDIA_ROOT
+
+    pc = (product_code or "").strip().upper()
+    if not pc:
+        return False, False, False
+    root = MEDIA_ROOT / pc
+    if not root.is_dir():
+        return False, False, False
+    has_ja = has_ko = has_plain = False
+    try:
+        for p in root.rglob("*"):
+            if not p.is_file():
+                continue
+            n = p.name.lower()
+            if n.endswith(".ja.srt"):
+                has_ja = True
+            elif n.endswith(".ko.srt"):
+                has_ko = True
+            elif n.endswith(".srt"):
+                has_plain = True
+            if has_ja and has_ko and has_plain:
+                break
+    except OSError:
+        pass
+    return has_ja, has_ko, has_plain
+
+
+def _merge_lamp_with_media_artifacts(
+    fstt: bool,
+    fsub: bool,
+    effective_hardcoded: bool,
+    product_code: str,
+) -> tuple[bool, bool, bool]:
+    mj, mk, mpl = _scan_data_media_srt_flags(product_code)
+    m_stt, m_sub = file_rule_lamp_stt_sub(mj, mk, mpl)
+    return (bool(fstt or m_stt), bool(fsub or m_sub), effective_hardcoded)
+
+
 def compute_library_lamp_flags(
     *,
     product_code: str,
@@ -178,15 +217,20 @@ def compute_library_lamp_flags(
         # DB에만 있고 이름에는 없는 경우 -> 표시하지 않음 (오탐 방지)
         effective_hardcoded = False
 
+    # 폴더·파일명에 자체자막 마커가 있으면 외부 자막 작품으로 보고 STT/번역 램프는 끈다.
+    if has_path_marker:
+        return False, False, True
+
     from javstory.pipeline.orchestrator import get_pipeline_status
 
     # 2. 폴더 미연결 상태 (기본 수집 정보 기반)
     if vp is None or not vp.is_file():
         st = get_pipeline_status(product_code=pc, video_path=None)
-        return (
+        return _merge_lamp_with_media_artifacts(
             bool(st.ja_srt_exists),
             bool(st.ko_srt_exists or st.srt_fallback_exists),
-            effective_hardcoded, 
+            effective_hardcoded,
+            pc,
         )
 
     # 3. 폴더 연결 상태
@@ -195,15 +239,16 @@ def compute_library_lamp_flags(
     
     # 별도 자막 파일이 없는 경우 상위 단계(STT/Sub)는 앱 산출물 캐시 활용
     if not ja and not ko and not pl:
-        return (
+        return _merge_lamp_with_media_artifacts(
             bool(st.ja_srt_exists),
             bool(st.ko_srt_exists or st.srt_fallback_exists),
             effective_hardcoded,
+            pc,
         )
 
     # 4. 별도 자막 파일 시스템 규칙 적용
     fstt, fsub = file_rule_lamp_stt_sub(ja, ko, pl)
-    return fstt, fsub, effective_hardcoded
+    return _merge_lamp_with_media_artifacts(fstt, fsub, effective_hardcoded, pc)
 
 
 def guess_video_path_for_product(product_code: str, folder_path: str | None = None) -> Path | None:

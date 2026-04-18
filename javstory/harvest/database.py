@@ -28,6 +28,7 @@ class JAVMetadata(Base):
     actors_ko = Column(Text, nullable=True)
     actors_ja = Column(Text, nullable=True)
     actors_romaji = Column(Text, nullable=True)
+    actors_en = Column(Text, nullable=True)
     actors_zh_cn = Column(Text, nullable=True)
     actors_zh_tw = Column(Text, nullable=True)
     
@@ -183,7 +184,12 @@ def _migrate_add_needs_review_columns():
             if "folder_path" not in cols_meta:
                 cursor.execute("ALTER TABLE jav_metadata ADD COLUMN folder_path TEXT")
                 print("[DB Migration] jav_metadata.folder_path 컬럼 추가 완료")
-                
+
+            cols_meta = [row[1] for row in cursor.execute("PRAGMA table_info(jav_metadata)")]
+            if "actors_en" not in cols_meta:
+                cursor.execute("ALTER TABLE jav_metadata ADD COLUMN actors_en TEXT")
+                print("[DB Migration] jav_metadata.actors_en 컬럼 추가 완료")
+
             conn.commit()
     except Exception as e:
         print(f"[DB Migration] 마이그레이션 실패: {e}")

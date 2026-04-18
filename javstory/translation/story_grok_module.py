@@ -101,7 +101,8 @@ async def run_story_grok_after_harvest_async(
         return
 
     log(f"🚀 Grok 웹검색 스토리 분석 시작: {pc} (Model: {model_name})")
-    
+
+    router: MultiTierRouter | None = None
     try:
         router = MultiTierRouter(api_key=api_key, logger_func=log)
         messages = [
@@ -113,11 +114,11 @@ async def run_story_grok_after_harvest_async(
         # 프롬프트에서 이미 JSON만 요청하므로 route() 호출.
         # :online 모델의 경우 가끔 JSON 모드가 안 될 수 있으므로 일반 호출 후 파싱.
         res_raw = await router.route(messages, tier_override=tier, json_mode=False)
-        
+
         data = parse_grok_story_json(res_raw)
         if not data:
-             log(f"❌ Grok 응답 파싱 실패 (JSON 형식 아님).")
-             return
+            log(f"❌ Grok 응답 파싱 실패 (JSON 형식 아님).")
+            return
 
         # 캐시 저장
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,6 +127,13 @@ async def run_story_grok_after_harvest_async(
 
     except Exception as e:
         log(f"❌ Grok 스토리 분석 중 오류 발생: {e}")
+    finally:
+        # AsyncOpenAI/httpx 연결 정리 — 미호출 시 루프 종료 후 aclose 되며 RuntimeError 발생 가능
+        if router is not None:
+            try:
+                await router.close()
+            except Exception:
+                pass
 
 
 def load_cached_grok_json(

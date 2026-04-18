@@ -289,7 +289,7 @@ async def run_crawler_for_video_path(
         # [핵심] 작업이 끝나면 (성공/실패 상관없이) 번역 엔진 명시적 종료
         try:
             await translator.close()
-        except:
+        except Exception:
             pass
 
 def _resolve_genres(japanese_genres: str | list) -> dict:

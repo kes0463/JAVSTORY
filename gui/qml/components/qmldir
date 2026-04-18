@@ -11,3 +11,4 @@ ToastNotification 1.0 ToastNotification.qml
 SelectableText 1.0 SelectableText.qml
 MultiLangEditorPopup 1.0 MultiLangEditorPopup.qml
 MasterSearchPopup 1.0 MasterSearchPopup.qml
+FolderBindingReviewPopup 1.0 FolderBindingReviewPopup.qml

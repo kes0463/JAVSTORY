@@ -2,17 +2,22 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import ".."
+import "."
 
 Popup {
     id: root
     modal: true
+    dim: true
     focus: true
     padding: Theme.spacingMd
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
-    width: Math.min(560, Overlay.overlay.width - 48)
+    width: Math.min(editMode === "synopsis" ? 640 : 580, Overlay.overlay.width - 48)
 
     property string editMode: "title" // "title" | "synopsis"
+
+    /** 텍스트 필드 배경 — Theme.surfaceLight는 Mica 모드에서 알파가 있어 패널과 구분이 약함 */
+    readonly property color fieldBg: Theme.isDark ? "#161E34" : "#FFFFFF"
 
     function reloadFields() {
         if (editMode === "title") {
@@ -41,9 +46,10 @@ Popup {
 
     onOpened: reloadFields()
 
+    // Win11(Mica) 모드에서 Theme.surface는 반투명이라 뒤 화면이 비치고 글자 대비가 깨짐 → 불투명 패널 사용
     background: Rectangle {
         radius: Theme.radiusMd
-        color: Theme.surface
+        color: Theme.bgSecondary
         border.color: Theme.glassBorder
         border.width: 1
     }
@@ -61,28 +67,108 @@ Popup {
         }
 
         ScrollView {
+            id: langScroll
             Layout.fillWidth: true
-            Layout.preferredHeight: 420
+            Layout.preferredHeight: editMode === "synopsis" ? 460 : 380
             clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
             ColumnLayout {
-                width: parent.width
+                // availableWidth가 0이면 Column이 지나치게 좁아 긴 제목이 한 글자씩 세로로 꺾임
+                width: Math.max(1, langScroll.availableWidth > 8
+                    ? langScroll.availableWidth
+                    : (root.width - 2 * root.padding))
                 spacing: Theme.spacingSm
 
                 Label { text: "한국어"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                TextArea { id: tfKo; Layout.fillWidth: true; wrapMode: TextArea.Wrap; selectByMouse: true }
+                TextArea {
+                    id: tfKo
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: editMode === "title" ? 88 : 160
+                    wrapMode: TextArea.Wrap
+                    selectByMouse: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textMuted
+                    font.pixelSize: Theme.fontBody
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: root.fieldBg
+                        border.color: Theme.glassBorder
+                        border.width: 1
+                    }
+                }
 
                 Label { text: "일본어"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                TextArea { id: tfJa; Layout.fillWidth: true; wrapMode: TextArea.Wrap; selectByMouse: true }
+                TextArea {
+                    id: tfJa
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: editMode === "title" ? 88 : 160
+                    wrapMode: TextArea.Wrap
+                    selectByMouse: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textMuted
+                    font.pixelSize: Theme.fontBody
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: root.fieldBg
+                        border.color: Theme.glassBorder
+                        border.width: 1
+                    }
+                }
 
                 Label { text: "영어"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                TextArea { id: tfEn; Layout.fillWidth: true; wrapMode: TextArea.Wrap; selectByMouse: true }
+                TextArea {
+                    id: tfEn
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: editMode === "title" ? 88 : 160
+                    wrapMode: TextArea.Wrap
+                    selectByMouse: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textMuted
+                    font.pixelSize: Theme.fontBody
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: root.fieldBg
+                        border.color: Theme.glassBorder
+                        border.width: 1
+                    }
+                }
 
                 Label { text: "중국어 간체"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                TextArea { id: tfZhc; Layout.fillWidth: true; wrapMode: TextArea.Wrap; selectByMouse: true }
+                TextArea {
+                    id: tfZhc
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: editMode === "title" ? 88 : 160
+                    wrapMode: TextArea.Wrap
+                    selectByMouse: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textMuted
+                    font.pixelSize: Theme.fontBody
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: root.fieldBg
+                        border.color: Theme.glassBorder
+                        border.width: 1
+                    }
+                }
 
                 Label { text: "중국어 번체"; color: Theme.textMuted; font.pixelSize: Theme.fontCaption }
-                TextArea { id: tfZht; Layout.fillWidth: true; wrapMode: TextArea.Wrap; selectByMouse: true }
+                TextArea {
+                    id: tfZht
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: editMode === "title" ? 88 : 160
+                    wrapMode: TextArea.Wrap
+                    selectByMouse: true
+                    color: Theme.textPrimary
+                    placeholderTextColor: Theme.textMuted
+                    font.pixelSize: Theme.fontBody
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: root.fieldBg
+                        border.color: Theme.glassBorder
+                        border.width: 1
+                    }
+                }
             }
         }
 
@@ -90,14 +176,13 @@ Popup {
             Layout.fillWidth: true
             spacing: Theme.spacingMd
             Item { Layout.fillWidth: true }
-            Button {
+            ActionButton {
                 text: "취소"
-                flat: true
+                primary: false
                 onClicked: root.close()
             }
-            Button {
+            ActionButton {
                 text: "확인"
-                highlighted: true
                 onClicked: root.applyAndClose()
             }
         }

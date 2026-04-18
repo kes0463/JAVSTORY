@@ -22,6 +22,10 @@ ApplicationWindow {
         z: 100
     }
 
+    FolderBindingReviewPopup {
+        id: folderBindingReviewPopup
+    }
+
     // 전역 토스트 헬퍼 (Python 모델에서 호출)
     function showToast(msg, level) {
         toast.show(msg, level || "info");
@@ -81,6 +85,16 @@ ApplicationWindow {
         function onCurrentIndexChanged() {
             if (viewStack.currentIndex === 3 && libraryLoader.item)
                 libraryLoader.item.forceLibraryFocus()
+        }
+    }
+
+    Connections {
+        target: LibraryModel
+        function onFolderBindingNeedsReview(productCode, oldPath, candidates) {
+            folderBindingReviewPopup.productCode = productCode || ""
+            folderBindingReviewPopup.oldPath = oldPath || ""
+            folderBindingReviewPopup.candidates = candidates ? candidates : []
+            folderBindingReviewPopup.open()
         }
     }
 }

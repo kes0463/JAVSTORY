@@ -51,6 +51,12 @@ def create_engine(app) -> QQmlApplicationEngine:
     ctx.setContextProperty("SettingsModel", settings)
     ctx.setContextProperty("FolderExplorerModel", folder_explorer)
 
+    from gui.folder_watch_service import FolderMoveWatchService
+
+    _folder_watch = FolderMoveWatchService(library, parent=app)
+    library.summariesReloaded.connect(_folder_watch.refresh_paths_from_db)
+    QTimer.singleShot(2500, _folder_watch.refresh_paths_from_db)
+
     print(f"[UI] Loading QML from: {_QML_DIR / 'main.qml'}")
     engine.load(QUrl.fromLocalFile(str(_QML_DIR / "main.qml")))
 
