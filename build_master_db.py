@@ -135,12 +135,14 @@ def _extract_scenes(db: dict, *, web_base_dir: Path, source_tag: str) -> list[di
                 stf = _safe_float(st, float("nan"))
                 if not (stf == stf):  # nan
                     continue
+                shot = s.get("screenshot")
+                if not (isinstance(shot, str) and shot.strip()):
+                    # screenshot이 없으면 "거리"를 고려할 의미가 없으므로 스킵
+                    continue
                 d = abs(stf - t)
                 if best_dist is None or d < best_dist:
-                    shot = s.get("screenshot")
-                    if isinstance(shot, str) and shot.strip():
-                        thumb = _resolve_to_root_rel(base_dir=web_base_dir, rel_or_abs=shot.strip())
-                        best_dist = d
+                    thumb = _resolve_to_root_rel(base_dir=web_base_dir, rel_or_abs=shot.strip())
+                    best_dist = d
 
             text_blob = " ".join([zone_label, position, action, intensity, description]).strip()
 

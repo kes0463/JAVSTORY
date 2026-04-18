@@ -26,6 +26,7 @@ def _compute_video_meta(
 
     fps = None
     if video_path:
+        cap = None
         try:
             cap = cv2.VideoCapture(video_path)
             if cap.isOpened():
@@ -35,9 +36,14 @@ def _compute_video_meta(
                     duration = max(duration, float(frame_count / fps_val))
                 if fps_val > 0:
                     fps = float(fps_val)
-            cap.release()
         except Exception:
             pass
+        finally:
+            try:
+                if cap is not None:
+                    cap.release()
+            except Exception:
+                pass
 
     # index.html 과 같은 폴더 기준 상대 경로 (SPA에서 <video src> 용)
     src = None

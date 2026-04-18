@@ -124,7 +124,7 @@ def execute_vlm_strikes(
     planned_calls: list[dict],
     api_key: str,
     *,
-    screenshots_dir: str | None = "screenshots",
+    screenshots_dir: str | None = None,
 ) -> list[dict]:
     """[NEW] 서킷 브레이커가 포함된 VLM 실행 루프"""
     results = []
@@ -152,7 +152,7 @@ def execute_vlm_strikes(
                 print(f"    ✅ State: {prev_state} | Changed: {result.get('changed', 'unknown')}")
 
             # VLM 호출 성공 시 스크린샷을 물리 파일로 저장 (프론트엔드에서 상대 경로로 참조)
-            if screenshots_dir:
+            if screenshots_dir is not None:
                 try:
                     os.makedirs(screenshots_dir, exist_ok=True)
                     frame = _extract_frame_at_time(video_path, t_sec)

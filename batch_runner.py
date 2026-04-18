@@ -97,10 +97,21 @@ def claim_pair_to_processing(processing: Path, mp4: Path, srt: Path) -> Path:
     중복 인식을 막기 위해 발견 즉시 PROCESSING으로 이동.
     - 각 작업은 job_dir(폴더) 단위로 관리
     """
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    job_name = f"{mp4.stem}__{ts}"
-    job_dir = processing / job_name
-    job_dir.mkdir(parents=True, exist_ok=False)
+    # 초 단위 타임스탬프는 같은 초에 2개가 들어오면 충돌(FileExistsError) 가능.
+    # 마이크로초 + 충돌 시 재시도로 job_dir 유니크 보장.
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    for bump in range(100):
+        suffix = "" if bump == 0 else f"__{bump:02d}"
+        job_name = f"{mp4.stem}__{ts}{suffix}"
+        job_dir = processing / job_name
+        try:
+            job_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            time.sleep(0.005)
+            continue
+    else:
+        raise RuntimeError("job_dir 생성에 반복 실패했습니다. (이름 충돌)")
 
     _safe_move(mp4, job_dir / mp4.name)
     _safe_move(srt, job_dir / srt.name)
