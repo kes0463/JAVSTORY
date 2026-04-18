@@ -1,264 +1,131 @@
-"""메인 창: CustomTkinter + tkinterdnd2 드롭 + 콘솔 Rich 출력."""
-from __future__ import annotations
+"""메인 윈도우 클래스 정의: UI 위젯을 포함하므로 QApplication 생성 후 로드되어야 함."""
+import sys
+from PyQt6.QtCore import Qt
+from qfluentwidgets import (
+    NavigationItemPosition, FluentWindow,
+    FluentIcon as FIF
+)
 
-import os
-import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from typing import Iterable
+from gui.theme_manager import theme_manager, AppTheme
+from gui.views.dashboard import DashboardView
+from gui.views.harvest import HarvestView
+from gui.views.processing import ProcessingView
+from gui.views.library import LibraryView
+from gui.views.settings import SettingsView
+from gui.components.log_drawer import LogDrawer
 
-import customtkinter as ctk
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
-from tkinterdnd2 import DND_FILES, TkinterDnD
+class JAVStoryMainWindow(FluentWindow):
+    _instance = None
 
-from core.app_config import APP_DISPLAY_TITLE, VIDEO_EXTENSIONS
-from core import secrets_manager
-from core.pipeline_stubs import run_full_pipeline_dummy
-from gui.settings_dialog import SettingsDialog
+    @staticmethod
+    def instance() -> JAVStoryMainWindow | None:
+        return JAVStoryMainWindow._instance
 
-
-console = Console()
-
-
-class MainWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
+        JAVStoryMainWindow._instance = self
+        self.setWindowTitle("JAVSTORY Pro - AI Story Analyzer")
+        self.resize(1100, 750)
+        self._mica_applied = False
+        
+        # Mica 효과 적용
+        self._apply_mica()
+        
+        # 로그 드로어 UI (하단 고정)
+        self.log_drawer = LogDrawer(self)
+        self.log_drawer.hide()
+        
+        # 실제 뷰 초기화
+        self._init_navigation()
+        
+        # UI 폴리싱: 여백 및 레이아웃 조정 (초기화 후 수행)
+        self.navigationInterface.setMenuButtonVisible(True)
+        self.navigationInterface.setExpandWidth(250)
+        
+        # 테마 변경 신호 연결
+        theme_manager.themeChanged.connect(self._on_theme_changed)
+        
+        # 초기 테마 로드
+        theme_manager.set_theme(AppTheme.WIN11_NATIVE)
+        
+        # 전역 QSS 적용 (사이드바 및 버튼 스타일 보정)
+        self._apply_global_styles()
 
-        try:
-            self.TkdndVersion = TkinterDnD._require(self)
-        except Exception:
-            self.TkdndVersion = None
+    def _apply_global_styles(self):
+        # 사이드바 아이템의 배경색과 테두리를 투명하게 강제 설정 (잔상 및 블랙박스 현상 제거)
+        style = """
+            #NavigationInterface, #NavigationBar, #NavigationPanel {
+                background-color: transparent !important;
+                border: none;
+            }
+            NavigationItem {
+                background-color: transparent !important;
+            }
+            NavigationItem:hover {
+                background-color: rgba(255, 255, 255, 0.1) !important;
+            }
+            #NavigationPanel {
+                background-color: rgba(255, 255, 255, 0.02) !important;
+            }
+        """
+        self.setStyleSheet(style)
+        # 윈도우 배경색 미세 조정 (잔상 방지용 베이스 레이어)
+        self.setProperty("mica-enabled", True)
 
-        self._video_paths: list[str] = []
-
-        self.title(APP_DISPLAY_TITLE)
-        self.geometry("920x640")
-        self.minsize(720, 480)
-
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("dark-blue")
-
-        self._build_ui()
-
-        if self.TkdndVersion is None:
-            self._log_banner(
-                "[yellow]tkinterdnd2 초기화 실패[/]: 파일 드롭은 비활성일 수 있습니다. pip 설치와 Tcl/tkdnd를 확인하세요."
-            )
-
-    def _build_ui(self) -> None:
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
-
-        top = ctk.CTkFrame(self, fg_color="transparent")
-        top.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 8))
-        top.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            top,
-            text=APP_DISPLAY_TITLE,
-            font=ctk.CTkFont(size=22, weight="bold"),
-        ).grid(row=0, column=0, sticky="w")
-
-        ctk.CTkButton(
-            top,
-            text="설정 (API 키)",
-            width=140,
-            command=self._open_settings,
-        ).grid(row=0, column=1, sticky="e")
-
-        drop_hint = ctk.CTkLabel(
-            self,
-            text="영상 파일 또는 폴더를 아래 목록으로 드래그 앤 드롭 하거나, 버튼으로 추가하세요.",
-            text_color=("gray30", "gray65"),
-        )
-        drop_hint.grid(row=1, column=0, padx=20, pady=(0, 6), sticky="w")
-
-        list_frame = ctk.CTkFrame(self, corner_radius=8)
-        list_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=8)
-        list_frame.grid_rowconfigure(0, weight=1)
-        list_frame.grid_columnconfigure(0, weight=1)
-
-        inner_bg = "#2b2b2b"
-        self._list_host = tk.Frame(list_frame, bg=inner_bg)
-        self._list_host.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
-
-        bg = "#1e1e1e"
-        fg = "#d4d4d4"
-        select_bg = "#1f538d"
-        self.listbox = tk.Listbox(
-            self._list_host,
-            font=("Consolas", 11),
-            bg=bg,
-            fg=fg,
-            selectbackground=select_bg,
-            selectforeground="white",
-            activestyle="none",
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        sb = ctk.CTkScrollbar(self._list_host, command=self.listbox.yview, orientation="vertical")
-        self.listbox.configure(yscrollcommand=sb.set)
-        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        if self.TkdndVersion is not None:
-            self.listbox.drop_target_register(DND_FILES)
-            self.listbox.dnd_bind("<<Drop>>", self._on_drop)
-
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.grid(row=3, column=0, sticky="ew", padx=16, pady=4)
-        for i in range(5):
-            btn_row.grid_columnconfigure(i, weight=1 if i == 4 else 0)
-
-        ctk.CTkButton(btn_row, text="파일 추가", command=self._add_files).grid(
-            row=0, column=0, padx=4, pady=4
-        )
-        ctk.CTkButton(btn_row, text="폴더 추가", command=self._add_folder).grid(
-            row=0, column=1, padx=4, pady=4
-        )
-        ctk.CTkButton(btn_row, text="선택 삭제", command=self._remove_selected).grid(
-            row=0, column=2, padx=4, pady=4
-        )
-        ctk.CTkButton(btn_row, text="전체 비우기", command=self._clear_list).grid(
-            row=0, column=3, padx=4, pady=4
-        )
-
-        bottom = ctk.CTkFrame(self, fg_color="transparent")
-        bottom.grid(row=4, column=0, sticky="ew", padx=16, pady=(8, 16))
-        bottom.grid_columnconfigure(0, weight=1)
-
-        self._progress = ctk.CTkLabel(bottom, text="대기 중")
-        self._progress.grid(row=0, column=0, sticky="w")
-
-        ctk.CTkButton(
-            bottom,
-            text="일괄 분석 시작",
-            width=160,
-            height=36,
-            font=ctk.CTkFont(size=14, weight="bold"),
-            command=self._start_pipeline,
-        ).grid(row=0, column=1, sticky="e")
-
-    def _open_settings(self) -> None:
-        SettingsDialog(self, on_saved=self._refresh_env_banner)
-
-    def _refresh_env_banner(self) -> None:
-        secrets_manager.apply_env_to_os()
-        if secrets_manager.get_openrouter_api_key():
-            self._progress.configure(text="API 키가 설정되었습니다. 대기 중")
-
-    def _on_drop(self, event) -> None:
-        raw = event.data
-        try:
-            paths = list(self.tk.splitlist(raw))
-        except tk.TclError:
-            paths = [raw]
-
-        cleaned: list[str] = []
-        for p in paths:
-            s = p.strip().strip("{}").strip('"')
-            if not s:
-                continue
-            cleaned.append(os.path.normpath(s))
-
-        self._ingest_paths(cleaned)
-
-    def _ingest_paths(self, paths: Iterable[str]) -> None:
-        for path in paths:
-            if not os.path.exists(path):
-                continue
-            if os.path.isdir(path):
-                self._walk_videos_into_list(path)
-            elif path.lower().endswith(VIDEO_EXTENSIONS):
-                self._add_single_path(path)
-
-    def _add_single_path(self, path: str) -> None:
-        norm = os.path.normpath(path)
-        if norm not in self._video_paths:
-            self._video_paths.append(norm)
-            self.listbox.insert(tk.END, norm)
-
-    def _walk_videos_into_list(self, folder: str) -> None:
-        for root, _, files in os.walk(folder):
-            for name in files:
-                if name.lower().endswith(VIDEO_EXTENSIONS):
-                    full = os.path.normpath(os.path.join(root, name))
-                    if full not in self._video_paths:
-                        self._video_paths.append(full)
-                        self.listbox.insert(tk.END, full)
-
-    def _add_files(self) -> None:
-        patterns = " ".join(f"*{ext}" for ext in VIDEO_EXTENSIONS)
-        files = filedialog.askopenfilenames(
-            title="영상 파일 선택",
-            filetypes=(
-                ("Video", patterns),
-                ("All", "*.*"),
-            ),
-        )
-        self._ingest_paths(files)
-
-    def _add_folder(self) -> None:
-        folder = filedialog.askdirectory(title="영상 폴더 선택")
-        if folder:
-            self._ingest_paths([folder])
-
-    def _remove_selected(self) -> None:
-        sel = list(self.listbox.curselection())
-        for i in reversed(sel):
-            self.listbox.delete(i)
-            del self._video_paths[i]
-
-    def _clear_list(self) -> None:
-        self.listbox.delete(0, tk.END)
-        self._video_paths.clear()
-
-    def _log_banner(self, subtitle: str) -> None:
-        console.print(
-            Panel.fit(
-                f"[bold cyan]{APP_DISPLAY_TITLE}[/]\n{subtitle}",
-                border_style="cyan",
-            )
-        )
-
-    def _start_pipeline(self) -> None:
-        if not secrets_manager.get_openrouter_api_key():
-            messagebox.showwarning(
-                "API 키 필요",
-                "설정에서 OpenRouter API 키를 먼저 저장해 주세요.",
-            )
-            self._open_settings()
+    def _apply_mica(self):
+        if self._mica_applied:
             return
+            
+        if sys.platform == "win32":
+            try:
+                import win32mica
+                import darkdetect
+                hwnd = int(self.winId())
+                mode = win32mica.MicaTheme.DARK if darkdetect.isDark() else win32mica.MicaTheme.LIGHT
+                win32mica.ApplyMica(hwnd, mode)
+                self._mica_applied = True
+            except Exception as e:
+                print(f"[UI] Mica 효과 적용 실패 (무시됨): {e}")
 
-        if not self._video_paths:
-            messagebox.showwarning("목록 비어 있음", "처리할 영상을 추가해 주세요.")
-            return
+    def _init_navigation(self):
+        # 1. Dashboard
+        self.dashboard_view = DashboardView(self)
+        self.addSubInterface(self.dashboard_view, FIF.HOME, "대시보드")
+        
+        # 2. Harvest (Stage 1, 2)
+        self.harvest_view = HarvestView(self)
+        self.addSubInterface(self.harvest_view, FIF.SEARCH, "수집")
+        
+        # 3. Transcription (STT + 멀티파트)
+        self.processing_view = ProcessingView(self)
+        self.addSubInterface(self.processing_view, FIF.MICROPHONE, "전사")
+        
+        # 4. Library — Harvest + canonical
+        self.library_view = LibraryView(self)
+        self.addSubInterface(self.library_view, FIF.LIBRARY, "라이브러리")
+        
+        # 5. Settings
+        self.settings_view = SettingsView(self)
+        self.addSubInterface(
+            self.settings_view, FIF.SETTING, "설정",
+            position=NavigationItemPosition.BOTTOM
+        )
 
-        self._progress.configure(text="콘솔 진행 중… (더미 파이프라인)")
+    def _on_theme_changed(self, theme: AppTheme):
+        if theme == AppTheme.WIN11_NATIVE:
+            self._apply_mica()
+        self.log_drawer.append_log(f"테마가 {theme.value} 모드로 변경되었습니다.")
 
-        def worker(paths: list[str]) -> None:
-            self._log_banner(
-                f"[green]더미 파이프라인[/] · 파일 {len(paths)}개 · 터미널에 단계별 출력"
-            )
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[bold blue]{task.description}"),
-                BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                console=console,
-            ) as progress:
-                task = progress.add_task("파일 처리", total=len(paths))
-                for path in paths:
-                    run_full_pipeline_dummy([path])
-                    progress.advance(task)
-            console.print("[bold green]더미 실행 완료[/] · 실제 로직은 이후 Phase에서 연결")
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_QuoteLeft and event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            if self.log_drawer.isHidden():
+                self.log_drawer.show()
+                self.log_drawer.setGeometry(0, self.height() - 300, self.width(), 300)
+            else:
+                self.log_drawer.hide()
+        super().keyPressEvent(event)
 
-            self.after(0, lambda: self._progress.configure(text="대기 중"))
-
-        threading.Thread(
-            target=worker,
-            args=(list(self._video_paths),),
-            daemon=True,
-        ).start()
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'log_drawer') and not self.log_drawer.isHidden():
+            self.log_drawer.setGeometry(0, self.height() - 300, self.width(), 300)

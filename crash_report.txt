@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "D:\App\JAVSTORY\gui_main_v2.py", line 50, in <module>
+    engine = create_engine(app)
+             ^^^^^^^^^^^^^^^^^^
+  File "D:\App\JAVSTORY\gui\app.py", line 26, in create_engine
+    from gui.models.processing_model import ProcessingModel
+  File "D:\App\JAVSTORY\gui\models\processing_model.py", line 286
+    pc = os.path.basename(path).replace(/\.[^/.]+$/, "")
+                                        ^
+SyntaxError: invalid syntax

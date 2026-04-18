@@ -1,0 +1,287 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import ".."
+import "../components"
+
+Item {
+    id: root
+
+    function _urlToLocalPath(u) {
+        // QML DropArea urls: e.g. "file:///D:/Foo/Bar" or "file:///C:/..."
+        var s = "" + u
+        if (s.indexOf("file://") === 0) {
+            s = s.replace("file://", "")
+            // Windows 드라이브 경로는 file:///D:/... → /D:/... 형태가 될 수 있음
+            if (s.length >= 3 && s[0] === "/" && s[2] === ":") {
+                s = s.slice(1)
+            }
+        }
+        try { s = decodeURIComponent(s) } catch (e) {}
+        return s
+    }
+
+    Connections {
+        target: HarvestModel
+        function onToastMessage(msg, level) { window.showToast(msg, level); }
+    }
+
+    DropArea {
+        id: dropArea
+        anchors.fill: parent
+        // Windows 탐색기 드롭은 keys 매칭이 불안정할 수 있어 제한하지 않는다.
+        // keys: ["text/uri-list"]
+        onEntered: function(drag) {
+            if (drag && drag.hasUrls) drag.acceptProposedAction()
+        }
+        onDropped: function(drop) {
+            if (drop) drop.acceptProposedAction()
+            if (!drop || !drop.urls || drop.urls.length === 0) return;
+            var added = 0
+            for (var i = 0; i < drop.urls.length; i++) {
+                var p = root._urlToLocalPath(drop.urls[i])
+                if (p) { HarvestModel.queueFolder(p); added += 1 }
+            }
+            if (added > 0) window.showToast("드롭됨: " + added + "개 경로를 큐에 추가 요청", "info")
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        visible: dropArea.containsDrag
+        color: Qt.rgba(0, 0, 0, 0.25)
+        z: 999
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 80, 520)
+            height: 140
+            radius: Theme.radiusMd
+            color: Theme.surface
+            border.color: Theme.accentNeon
+            border.width: 2
+
+            Column {
+                anchors.centerIn: parent
+                spacing: 8
+
+                Text {
+                    text: "폴더를 여기로 드롭하면 큐에 추가됩니다"
+                    font.pixelSize: Theme.fontSubtitle
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                    horizontalAlignment: Text.AlignHCenter
+                    width: parent.width
+                }
+                Text {
+                    text: "추가 후 「큐 수집 시작」을 눌러 실행하세요"
+                    font.pixelSize: Theme.fontCaption
+                    color: Theme.textMuted
+                    horizontalAlignment: Text.AlignHCenter
+                    width: parent.width
+                }
+            }
+        }
+    }
+
+    ScrollView {
+        id: scrollView
+        anchors.fill: parent
+        anchors.margins: Theme.spacingLg
+        contentWidth: availableWidth
+        Component.onCompleted: {
+            var f = scrollView.contentItem
+            if (f) {
+                f.flickDeceleration = Theme.flickDeceleration
+                f.maximumFlickVelocity = Theme.maxVelocity
+                f.boundsBehavior = Theme.boundsBehavior
+            }
+        }
+
+        Column {
+            width: parent.width
+            spacing: Theme.spacingLg
+
+            // ── 헤더 + Grok 토글 ────────────────────────
+            RowLayout {
+                width: parent.width
+
+                Column {
+                    spacing: 4
+                    Text {
+                        text: "수집 (Harvest)"
+                        font.pixelSize: Theme.fontTitle
+                        font.weight: Font.ExtraBold
+                        color: Theme.textPrimary
+                    }
+                    Text {
+                        text: "크롤링 · 다국어 번역 · DB 저장 · Grok 스토리 맥락"
+                        font.pixelSize: Theme.fontBody
+                        color: Theme.textSecondary
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Row {
+                    spacing: Theme.spacingSm
+                    Text {
+                        text: "Grok 스토리"
+                        font.pixelSize: Theme.fontCaption
+                        color: Theme.textSecondary
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Switch {
+                        checked: HarvestModel.grokEnabled
+                        onToggled: HarvestModel.grokEnabled = checked
+                    }
+                }
+            }
+
+            // ── 검색창 ──────────────────────────────────
+            Row {
+                spacing: Theme.spacingSm
+                width: parent.width
+
+                SearchBar {
+                    id: searchBar
+                    placeholderText: "품번 입력 (예: STAR-471, MIDE-123)"
+                    width: 350
+                    onAccepted: function(q) {
+                        var val = q.trim();
+                        if (val) {
+                            HarvestModel.addTask(val);
+                            searchBar.text = "";
+                        }
+                    }
+                }
+
+                ActionButton {
+                    text: "수집 시작"
+                    iconSource: "🚀"
+                    primary: true
+                    onClicked: {
+                        var val = searchBar.text.trim();
+                        if (val) {
+                            HarvestModel.addTask(val);
+                            searchBar.text = "";
+                        }
+                    }
+                }
+
+                ActionButton {
+                    text: "폴더 수집"
+                    primary: false
+                    onClicked: {
+                        var path = SettingsModel.browseFolder();
+                        if (path) HarvestModel.queueFolder(path);
+                    }
+                }
+
+                ActionButton {
+                    text: "상위 폴더 일괄"
+                    primary: false
+                    onClicked: {
+                        var path = SettingsModel.browseFolder();
+                        if (path) HarvestModel.queueParentFolder(path);
+                    }
+                }
+
+                Item { width: Theme.spacingSm }
+
+                ActionButton {
+                    text: "큐 수집 시작 (" + HarvestModel.queuedCount + ")"
+                    primary: true
+                    neonGlow: true
+                    enabled: HarvestModel.queuedCount > 0
+                    onClicked: HarvestModel.startQueued()
+                }
+
+                ActionButton {
+                    text: "큐 비우기"
+                    primary: false
+                    enabled: HarvestModel.queuedCount > 0
+                    onClicked: HarvestModel.clearQueued()
+                }
+            }
+
+            // ── 수집 카드 그리드 ────────────────────────
+            Flow {
+                id: taskGrid
+                width: parent.width
+                spacing: Theme.spacingSm + 4
+
+                Repeater {
+                    model: HarvestModel.tasks
+
+                    GlassCard {
+                        width: 280
+                        height: 120
+                        hoverGlow: true
+
+                        opacity: 0
+                        Component.onCompleted: opacity = 1
+                        Behavior on opacity { NumberAnimation { duration: Theme.animNormal } }
+
+                        Column {
+                            anchors.fill: parent
+                            anchors.margins: Theme.spacingSm
+                            spacing: 6
+
+                            RowLayout {
+                                width: parent.width
+
+                                Text {
+                                    text: model.sku
+                                    font.pixelSize: Theme.fontBody
+                                    font.weight: Font.Bold
+                                    color: Theme.accentNeon
+                                    Layout.fillWidth: true
+                                }
+
+                                StatusBadge {
+                                    status: (model.message === "큐 대기" || model.status === "waiting") ? "queued"
+                                          : model.status === "done" ? "canonical"
+                                          : model.status === "error" ? "error"
+                                          : model.status === "running" ? "running"
+                                          : "none"
+                                    label: (model.message === "큐 대기" || model.status === "waiting") ? "QUEUED" : model.status
+                                }
+                            }
+
+                            ProgressIndicator {
+                                width: parent.width
+                                value: model.progress / 100
+                                barColor: (model.message === "큐 대기" || model.status === "waiting") ? Theme.warning
+                                        : model.status === "error" ? Theme.error
+                                        : Theme.accentNeon
+                            }
+
+                            Text {
+                                text: model.message || ""
+                                font.pixelSize: Theme.fontCaption
+                                color: Theme.textMuted
+                                elide: Text.ElideRight
+                                width: parent.width
+                                maximumLineCount: 2
+                                wrapMode: Text.Wrap
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 로그 패널 ───────────────────────────────
+            LogPanel {
+                id: harvestLog
+                width: parent.width
+                implicitHeight: 200
+
+                Connections {
+                    target: HarvestModel
+                    function onLogMessage(msg) { harvestLog.append(msg); }
+                }
+            }
+        }
+    }
+}

@@ -13,7 +13,7 @@ IF NOT EXIST "venv" (
     exit /b 1
 )
 
-:: Activate venv and run main.py
+:: Activate venv and run GUI v2
 call venv\Scripts\activate.bat
-python main.py
+python gui_main_v2.py
 pause

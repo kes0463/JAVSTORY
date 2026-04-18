@@ -2,11 +2,18 @@ import json
 import os
 import argparse
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
+
+from javstory.library.export.master_js import write_master_db_js
 
 
 ROOT = Path(__file__).resolve().parent
+
+# `data/derived/master_db.js` — 경로는 `core.app_config.DERIVED_DATA_DIR`와 동기
+def _derived_dir() -> Path:
+    from javstory.config.app_config import DERIVED_DATA_DIR
+
+    return DERIVED_DATA_DIR
 DEFAULT_FACTORY_ROOT = (
     Path(os.environ.get("JAVSTORY_FACTORY_ROOT", "")).expanduser()
     if os.environ.get("JAVSTORY_FACTORY_ROOT")
@@ -203,23 +210,10 @@ def build_master_db(factory_root: Path) -> tuple[list[dict], BuildStats]:
 
 
 def write_master_js(entries: list[dict]) -> Path:
-    out_path = ROOT / "master_db.js"
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write("window.MASTER_DB = ")
-        json.dump(entries, f, ensure_ascii=False)
-        f.write(";\n")
-        # 부가 메타 (선택): 배열 요구사항을 깨지 않기 위해 별도 전역으로 둔다.
-        f.write("window.MASTER_DB_META = ")
-        json.dump(
-            {
-                "version": "master_v1",
-                "generated_at": datetime.now().isoformat(timespec="seconds"),
-                "count": len(entries),
-            },
-            f,
-            ensure_ascii=False,
-        )
-        f.write(";\n")
+    d = _derived_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    out_path = d / "master_db.js"
+    write_master_db_js(out_path, entries)
     return out_path
 
 
