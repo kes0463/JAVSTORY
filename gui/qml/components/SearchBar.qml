@@ -11,6 +11,8 @@ Rectangle {
     /// 키보드 세로 체인(라이브러리 목록): ↑ 검색 위 컨트롤, ↓ 아래 컨트롤
     signal navigateUp()
     signal navigateDown()
+    /// 커서가 줄 맨 앞일 때 ← 왼쪽: 옆 컨트롤(예: 필터 버튼)
+    signal navigateLeft()
     /// 커서가 줄 끝일 때 → 오른쪽: 옆 컨트롤(예: 정렬 ComboBox)
     signal navigateRight()
 
@@ -53,6 +55,13 @@ Rectangle {
             clip: true
 
             Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Left && input.cursorPosition === 0
+                        && input.selectionStart === input.selectionEnd
+                        && !(event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier))) {
+                    root.navigateLeft()
+                    event.accepted = true
+                    return
+                }
                 if (event.key === Qt.Key_Up && input.cursorPosition === 0
                         && input.selectionStart === input.selectionEnd
                         && !(event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier))) {

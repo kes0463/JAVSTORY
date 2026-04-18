@@ -300,7 +300,9 @@ class FolderMoveWatchService(QObject):
         if not self._watcher:
             return
         try:
-            self._watcher.removePaths(self._watcher.directories())
+            old = self._watcher.directories()
+            if old:
+                self._watcher.removePaths(old)
         except Exception:
             pass
 

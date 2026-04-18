@@ -964,8 +964,10 @@ class LibraryModel(QObject):
         filtered = []
         for s in self._all_summaries:
             if q:
-                blob = f"{s.product_code} {s.title_ko} {s.actors_ko}".lower()
-                if q not in blob: continue
+                gk = getattr(s, "genres_ko", None) or ""
+                blob = f"{s.product_code} {s.title_ko} {s.actors_ko} {gk}".lower()
+                if q not in blob:
+                    continue
             filtered.append(s)
 
         groups = {}

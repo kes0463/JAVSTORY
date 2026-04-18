@@ -29,6 +29,9 @@ Item {
     }
     property string bindingProductCode: ""
 
+    /// 검색창·필터·정렬 콤보 공통 높이
+    readonly property int libToolbarH: 40
+
     /// 그리드 키보드 하이라이트 활성 여부
     property bool gridNavActive: false
 
@@ -222,7 +225,8 @@ Item {
             var arrow = key === Qt.Key_Left || key === Qt.Key_Right || key === Qt.Key_Up || key === Qt.Key_Down
             if (!arrow || mods & Qt.ShiftModifier || mods & Qt.ControlModifier || mods & Qt.AltModifier)
                 return
-            if (libSearch.hasInputFocus || sortCombo.activeFocus || refreshBtn.activeFocus)
+            if (libSearch.hasInputFocus || sortCombo.activeFocus || refreshBtn.activeFocus
+                    || libFilterBtn.activeFocus)
                 return
             if (gridNavActive)
                 return
@@ -276,7 +280,7 @@ Item {
                             return
                         }
                         if (event.key === Qt.Key_Down) {
-                            libSearch.focusSearchInput()
+                            libFilterBtn.forceActiveFocus()
                             event.accepted = true
                         }
                     }
@@ -287,15 +291,65 @@ Item {
                 spacing: Theme.spacingSm
                 width: parent.width
 
+                Button {
+                    id: libFilterBtn
+                    focusPolicy: Qt.StrongFocus
+                    height: root.libToolbarH
+                    width: root.libToolbarH
+                    padding: 0
+                    text: "\u2630"
+                    flat: true
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "라이브러리 필터"
+
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: Theme.surfaceLight
+                        border.color: libFilterBtn.activeFocus ? Theme.accentNeon : Theme.glassBorder
+                        border.width: 1
+                    }
+                    contentItem: Text {
+                        text: libFilterBtn.text
+                        font.pixelSize: Theme.fontBody
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        color: Theme.textPrimary
+                    }
+
+                    onFocusChanged: function() {
+                        if (libFilterBtn.focus)
+                            resetGridNavigation()
+                    }
+
+                    Keys.onPressed: function(event) {
+                        if (event.key === Qt.Key_Right || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                            libSearch.focusSearchInput()
+                            event.accepted = true
+                            return
+                        }
+                        if (event.key === Qt.Key_Down) {
+                            libSearch.focusSearchInput()
+                            event.accepted = true
+                            return
+                        }
+                        if (event.key === Qt.Key_Up) {
+                            refreshBtn.forceActiveFocus()
+                            event.accepted = true
+                        }
+                    }
+                }
+
                 SearchBar {
                     id: libSearch
-                    placeholderText: "품번 · 제목 · 배우 검색..."
+                    height: root.libToolbarH
+                    placeholderText: "품번 · 제목 · 배우 · 장르 검색..."
                     width: 380
                     text: LibraryModel.searchQuery
                     onAccepted: function(q) { LibraryModel.searchQuery = q; }
                     onTextChanged: LibraryModel.searchQuery = text
                     onNavigateUp: refreshBtn.forceActiveFocus()
                     onNavigateDown: focusGridFromToolbar(false)
+                    onNavigateLeft: libFilterBtn.forceActiveFocus()
                     onNavigateRight: {
                         sortCombo.forceActiveFocus()
                         Qt.callLater(function () { sortCombo.popup.open() })
@@ -308,6 +362,7 @@ Item {
 
                 ComboBox {
                     id: sortCombo
+                    height: root.libToolbarH
                     width: 170
                     focusPolicy: Qt.StrongFocus
                     model: ["품번순", "날짜순 (최신)", "날짜순 (오래된)", "씬 수 (많은)"]
