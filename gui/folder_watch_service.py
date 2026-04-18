@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+import json
 import os
 import string
 import sys
+import threading
+import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, Slot
+# #region agent log
+_AGENT_LOG_PATH = Path(__file__).resolve().parent.parent / "debug-013299.log"
+
+
+def _agent_debug_log(hypothesis_id: str, location: str, message: str, data: dict | None = None) -> None:
+    """Debug NDJSON session 013299 — UI freeze investigation (folder candidate search)."""
+    try:
+        payload = {
+            "sessionId": "013299",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": {
+                **(data or {}),
+                "thread": threading.current_thread().name,
+                "threadIdent": threading.get_ident(),
+            },
+            "timestamp": int(time.time() * 1000),
+        }
+        with open(_AGENT_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+# #endregion
+
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 
 try:
     from PySide6.QtCore import QFileSystemWatcher
@@ -204,10 +234,26 @@ def search_folder_candidates(
     if not roots:
         return []
 
+    # #region agent log
+    t0 = time.perf_counter()
+    root_strs = []
+    try:
+        root_strs = [str(r) for r in roots[:12]]
+    except Exception:
+        root_strs = []
+    _agent_debug_log(
+        "A",
+        "folder_watch_service.search_folder_candidates",
+        "scan_start",
+        {"pc": pc, "limit": limit, "n_roots": len(roots), "roots_sample": root_strs},
+    )
+    # #endregion
+
     seen: set[str] = set()
     raw: list[str] = []
     scanned = 0
     pc_compact = pc.replace("-", "")
+    _milestone = 0
 
     for base in roots:
         if not base.is_dir():
@@ -216,6 +262,16 @@ def search_folder_candidates(
         while stack and scanned < limit and len(raw) < max_pool:
             p, depth = stack.pop()
             scanned += 1
+            # #region agent log
+            if scanned >= _milestone + 150_000:
+                _milestone = scanned
+                _agent_debug_log(
+                    "D",
+                    "folder_watch_service.search_folder_candidates",
+                    "scan_progress",
+                    {"scanned": scanned, "stack_depth": len(stack), "raw_count": len(raw)},
+                )
+            # #endregion
             try:
                 if not p.is_dir():
                     continue
@@ -242,7 +298,45 @@ def search_folder_candidates(
                 continue
 
     ranked = _rank_candidates_by_old_path(old_path, raw)
-    return ranked[:max_results]
+    out = ranked[:max_results]
+    # #region agent log
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    _agent_debug_log(
+        "A",
+        "folder_watch_service.search_folder_candidates",
+        "scan_end",
+        {
+            "pc": pc,
+            "elapsed_ms": elapsed_ms,
+            "scanned": scanned,
+            "raw_candidates": len(raw),
+            "returned": len(out),
+        },
+    )
+    # #endregion
+    return out
+
+
+class _FolderCandidateSearchRunnable(QRunnable):
+    """Heavy filesystem scan must not run on the Qt GUI thread."""
+
+    def __init__(self, svc: "FolderMoveWatchService", pc: str, fp: str) -> None:
+        super().__init__()
+        self._svc = svc
+        self._pc = pc
+        self._fp = fp
+
+    def run(self) -> None:
+        # #region agent log
+        _agent_debug_log(
+            "E",
+            "folder_watch_service._FolderCandidateSearchRunnable.run",
+            "worker_search_start",
+            {"pc": self._pc},
+        )
+        # #endregion
+        cands = search_folder_candidates(self._pc, old_path=self._fp)
+        self._svc._folder_search_done.emit(self._pc, self._fp, cands)
 
 
 class FolderMoveWatchService(QObject):
@@ -252,11 +346,16 @@ class FolderMoveWatchService(QObject):
     - 경로가 사라지면 LibraryModel.folderBindingNeedsReview만 발생 — 자동 토스트·refresh 없음 (QML 확인)
     """
 
+    _folder_search_done = Signal(str, str, list)
+
     def __init__(self, library_model: QObject, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._library = library_model
         self._paths: dict[str, str] = {}
         self._broken_notified: set[str] = set()
+        self._folder_search_done.connect(self._deliver_folder_binding_review)
+        self._search_pool = QThreadPool(self)
+        self._search_pool.setMaxThreadCount(2)
         self._watcher = QFileSystemWatcher(self) if QFileSystemWatcher else None
         if self._watcher:
             self._watcher.directoryChanged.connect(self._schedule_verify)
@@ -269,6 +368,23 @@ class FolderMoveWatchService(QObject):
         self._poll = QTimer(self)
         self._poll.setInterval(60_000)
         self._poll.timeout.connect(self.verify_bindings)
+
+    @Slot(str, str, list)
+    def _deliver_folder_binding_review(self, pc: str, fp: str, cands: list) -> None:
+        # #region agent log
+        _agent_debug_log(
+            "E",
+            "folder_watch_service._deliver_folder_binding_review",
+            "main_thread_deliver",
+            {"pc": pc, "n_cands": len(cands) if isinstance(cands, list) else -1},
+        )
+        # #endregion
+        try:
+            rel = getattr(self._library, "folderBindingNeedsReview", None)
+            if rel is not None:
+                rel.emit(pc, fp, cands)
+        except Exception as e:
+            print(f"[FolderWatch] folderBindingNeedsReview: {e}")
 
     @Slot()
     def refresh_paths_from_db(self) -> None:
@@ -349,10 +465,12 @@ class FolderMoveWatchService(QObject):
                 continue
             self._broken_notified.add(pc)
 
-            cands = search_folder_candidates(pc, old_path=fp)
-            try:
-                rel = getattr(self._library, "folderBindingNeedsReview", None)
-                if rel is not None:
-                    rel.emit(pc, fp, cands)
-            except Exception as e:
-                print(f"[FolderWatch] folderBindingNeedsReview: {e}")
+            # #region agent log
+            _agent_debug_log(
+                "B",
+                "folder_watch_service.verify_bindings",
+                "queued_folder_candidate_search",
+                {"pc": pc, "old_path_fp": str(fp)[:200]},
+            )
+            # #endregion
+            self._search_pool.start(_FolderCandidateSearchRunnable(self, pc, fp))

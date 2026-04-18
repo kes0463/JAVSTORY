@@ -59,10 +59,11 @@ def _resolve_ja_corrected_output_path(ja_srt: Path, kwargs: dict[str, Any]) -> P
     explicit = kwargs.get("ja_corrected_srt_path")
     if explicit:
         return Path(str(explicit)).expanduser().resolve()
+    # 유저 요청: .corrected 없이 원본 .ja.srt를 덮어쓰거나 해당 이름으로 저장
     work_dir = kwargs.get("work_dir")
     if work_dir:
-        return Path(str(work_dir)).expanduser().resolve() / f"{ja_srt.stem}.corrected.srt"
-    return ja_srt.with_name(ja_srt.stem + ".corrected.srt")
+        return Path(str(work_dir)).expanduser().resolve() / ja_srt.name
+    return ja_srt
 
 
 def _resolve_ko_translation_input_path(kwargs: dict[str, Any]) -> Path | None:
@@ -86,13 +87,15 @@ def _resolve_ko_srt_output_path(ja_input: Path, kwargs: dict[str, Any]) -> Path:
     explicit = kwargs.get("ko_srt_path")
     if explicit and str(explicit).strip():
         return Path(str(explicit)).expanduser().resolve()
+    
     work_dir = kwargs.get("work_dir")
     stem = ja_input.stem
+    # .ja.srt 또는 .ja.corrected.srt 등에서 .ko.srt를 유도
     if stem.endswith(".corrected"):
         stem = stem[: -len(".corrected")]
-    # foo.ja.srt → stem "foo.ja" → 한국어 출력은 foo.ko.srt (foo.ja.ko.srt 방지)
     if stem.endswith(".ja"):
         stem = stem[: -len(".ja")]
+    
     name = f"{stem}.ko.srt"
     if work_dir:
         return Path(str(work_dir)).expanduser().resolve() / name

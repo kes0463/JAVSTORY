@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import ".."
 import "../components"
 import QtQuick.Dialogs
+import Qt5Compat.GraphicalEffects
 
 Item {
     id: root
@@ -304,16 +305,125 @@ Item {
 
                     background: Rectangle {
                         radius: Theme.radiusSm
-                        color: Theme.surfaceLight
-                        border.color: libFilterBtn.activeFocus ? Theme.accentNeon : Theme.glassBorder
+                        color: LibraryModel.filterMode !== 0 ? Theme.accentGlow : Theme.surfaceLight
+                        border.color: libFilterBtn.activeFocus || LibraryModel.filterMode !== 0 ? Theme.accentNeon : Theme.glassBorder
                         border.width: 1
+                        
+                        // 필터 활성화 점(인디케이터)
+                        Rectangle {
+                            visible: LibraryModel.filterMode !== 0
+                            width: 6; height: 6; radius: 3
+                            color: Theme.accentNeon
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.margins: 4
+                        }
                     }
                     contentItem: Text {
                         text: libFilterBtn.text
                         font.pixelSize: Theme.fontBody
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
-                        color: Theme.textPrimary
+                        color: LibraryModel.filterMode !== 0 ? Theme.accentNeon : Theme.textPrimary
+                    }
+
+                    onClicked: filterMenu.open()
+
+                    Menu {
+                        id: filterMenu
+                        y: parent.height + 4
+                        width: 160
+                        padding: 6
+
+                        background: Rectangle {
+                            color: Theme.bgSecondary
+                            border.color: Theme.glassBorderHover // 조금 더 밝은 경계선 사용
+                            border.width: 1
+                            radius: Theme.radiusSm
+                            
+                            // 그림자 효과 추가
+                            layer.enabled: true
+                            layer.effect: Component {
+                                DropShadow {
+                                    transparentBorder: true
+                                    radius: 8
+                                    samples: 17
+                                    color: "#80000000"
+                                }
+                            }
+                        }
+
+                        // MenuItem 공통 스타일을 위한 컴포넌트화를 대신해 반복 수정
+                        MenuItem {
+                            id: mi0
+                            text: "전체"
+                            onTriggered: LibraryModel.filterMode = 0
+                            font.pixelSize: 13
+                            highlighted: LibraryModel.filterMode === 0
+                            contentItem: Text {
+                                text: mi0.text
+                                font: mi0.font
+                                color: mi0.highlighted ? Theme.accentNeon : Theme.textPrimary
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 4
+                            }
+                        }
+                        MenuItem {
+                            id: mi1
+                            text: "분석 완료"
+                            onTriggered: LibraryModel.filterMode = 1
+                            font.pixelSize: 13
+                            highlighted: LibraryModel.filterMode === 1
+                            contentItem: Text {
+                                text: mi1.text
+                                font: mi1.font
+                                color: mi1.highlighted ? Theme.accentNeon : Theme.textPrimary
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 4
+                            }
+                        }
+                        MenuItem {
+                            id: mi2
+                            text: "분석 미완료"
+                            onTriggered: LibraryModel.filterMode = 2
+                            font.pixelSize: 13
+                            highlighted: LibraryModel.filterMode === 2
+                            contentItem: Text {
+                                text: mi2.text
+                                font: mi2.font
+                                color: mi2.highlighted ? Theme.accentNeon : Theme.textPrimary
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 4
+                            }
+                        }
+                        MenuItem {
+                            id: mi3
+                            text: "폴더 연결됨"
+                            onTriggered: LibraryModel.filterMode = 3
+                            font.pixelSize: 13
+                            highlighted: LibraryModel.filterMode === 3
+                            contentItem: Text {
+                                text: mi3.text
+                                font: mi3.font
+                                color: mi3.highlighted ? Theme.accentNeon : Theme.textPrimary
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 4
+                            }
+                        }
+                        MenuItem {
+                            id: mi4
+                            text: "자막 있음"
+                            onTriggered: LibraryModel.filterMode = 4
+                            font.pixelSize: 13
+                            highlighted: LibraryModel.filterMode === 4
+                            contentItem: Text {
+                                text: mi4.text
+                                font: mi4.font
+                                color: mi4.highlighted ? Theme.accentNeon : Theme.textPrimary
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 4
+                            }
+                        }
                     }
 
                     onFocusChanged: function() {

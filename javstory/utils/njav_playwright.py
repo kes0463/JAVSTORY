@@ -366,6 +366,8 @@ async def scrape_njavtv_playwright_async(
         return out
 
     try:
+        browser = None
+        context = None
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=headless, slow_mo=slow_mo)
             context = await browser.new_context(
@@ -416,11 +418,13 @@ async def scrape_njavtv_playwright_async(
                         data["_page_html"] = ""
             finally:
                 try:
-                    await context.close()
+                    if context:
+                        await context.close()
                 except Exception:
                     pass
                 try:
-                    await browser.close()
+                    if browser:
+                        await browser.close()
                 except Exception:
                     pass
     except Exception as e:
@@ -453,6 +457,8 @@ def scrape_njavtv_playwright(
 
     data: dict[str, Any] = {"code_requested": code}
 
+    browser = None
+    context = None
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=headless, slow_mo=slow_mo)
@@ -504,11 +510,13 @@ def scrape_njavtv_playwright(
                         data["_page_html"] = ""
             finally:
                 try:
-                    context.close()
+                    if context:
+                        context.close()
                 except Exception:
                     pass
                 try:
-                    browser.close()
+                    if browser:
+                        browser.close()
                 except Exception:
                     pass
     except Exception as e:

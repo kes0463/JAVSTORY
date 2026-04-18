@@ -13,6 +13,7 @@ from PySide6.QtCore import (
 
 from gui.models.detail_edit_draft import DetailEditDraft
 from gui.models.scene_edit_model import SceneEditModel
+from gui.library_data import find_all_video_paths_for_product
 
 
 class WorkListModel(QAbstractListModel):
@@ -159,6 +160,7 @@ class LibraryModel(QObject):
 
     # 검색 및 필터링 관련 시그널
     searchQueryChanged = Signal()
+    filterModeChanged = Signal()
     sortModeChanged = Signal()
     workCountChanged = Signal()
     detailLoaded = Signal()
@@ -182,6 +184,7 @@ class LibraryModel(QObject):
         super().__init__(parent)
         LibraryModel._instance = self
         self._search_query = ""
+        self._filter_mode = 0  # 0:All, 1:Analyzed, 2:Pending, 3:Linked, 4:Subtitled
         self._sort_mode = 0
         self._all_summaries: list = []
         self._works = WorkListModel(self)
@@ -225,6 +228,15 @@ class LibraryModel(QObject):
             self._search_query = v
             self.searchQueryChanged.emit()
             self._debounce.start()
+
+    @Property(int, notify=filterModeChanged)
+    def filterMode(self): return self._filter_mode
+    @filterMode.setter
+    def filterMode(self, v: int):
+        if v != self._filter_mode:
+            self._filter_mode = v
+            self.filterModeChanged.emit()
+            self._rebuild()
 
     @Property(int, notify=sortModeChanged)
     def sortMode(self): return self._sort_mode
@@ -489,10 +501,18 @@ class LibraryModel(QObject):
     @Slot(str, str, result=list)
     def searchFolderBindingCandidates(self, product_code: str, old_path: str) -> list[str]:
         """라이브러리·미디어 루트에서 품번 폴더 후보 경로를 다시 검색한다 (팝업의 ‘다시 검색’용)."""
-        from gui.folder_watch_service import search_folder_candidates
+        from gui.folder_watch_service import search_folder_candidates, _agent_debug_log
 
         pc = (product_code or "").strip().upper()
         op = (old_path or "").strip()
+        # #region agent log
+        _agent_debug_log(
+            "C",
+            "library_model.searchFolderBindingCandidates",
+            "entry",
+            {"pc": pc, "old_path_len": len(op)},
+        )
+        # #endregion
         return search_folder_candidates(pc, old_path=op if op else None)
 
     @Slot(str)
@@ -952,6 +972,55 @@ class LibraryModel(QObject):
         except Exception as e:
             print(f"[LibraryModel] 폴더 연결 후 자동 스냅샷 실패: {e}")
 
+    @Slot(str, str)
+    def startSTTForDetail(self, product_code: str, folder_path: str):
+        """상세 화면에서 해당 작품의 모든 영상에 대해 전사(STT) 시작."""
+        vps = find_all_video_paths_for_product(product_code, folder_path)
+        if not vps:
+            self.toastMessage.emit("동영상 파일을 찾을 수 없습니다.", "warning")
+            return
+
+        from gui.models.processing_model import ProcessingModel
+        pm = ProcessingModel.instance()
+        if not pm:
+            self.toastMessage.emit("전사 모델을 찾을 수 없습니다.", "error")
+            return
+        
+        if pm.isRunning:
+            self.toastMessage.emit("이미 다른 작업이 진행 중입니다.", "warning")
+            return
+
+        paths = [str(p) for p in vps]
+        pm.addFiles(paths)
+        pm.startQueueStt()
+        self.toastMessage.emit(f"{len(paths)}건의 전사를 시작합니다.", "success")
+
+    @Slot(str, str)
+    def startSubtitleForDetail(self, product_code: str, folder_path: str):
+        """상세 화면에서 해당 작품의 모든 영상에 대해 자막 생성(교정+번역) 시작."""
+        vps = find_all_video_paths_for_product(product_code, folder_path)
+        if not vps:
+            self.toastMessage.emit("동영상 파일을 찾을 수 없습니다.", "warning")
+            return
+
+        from gui.models.processing_model import ProcessingModel
+        pm = ProcessingModel.instance()
+        if not pm:
+            self.toastMessage.emit("전사 모델을 찾을 수 없습니다.", "error")
+            return
+
+        if pm.isRunning:
+            self.toastMessage.emit("이미 다른 작업이 진행 중입니다.", "warning")
+            return
+
+        # 큐에 추가할 때, 자막 파일(.ja.srt)이 있는지 확인하여 있는 것만 진행할 수도 있고, 
+        # ProcessingModel에서 알아서 체크하도록 할 수도 있음. 
+        # 여기서는 일단 체크된 파일들을 큐에 넣고 startQueueSubtitle() 호출.
+        paths = [str(p) for p in vps]
+        pm.addFiles(paths)
+        pm.startQueueSubtitle()
+        self.toastMessage.emit(f"{len(paths)}건의 자막 생성을 시작합니다.", "success")
+
     def _rebuild(self):
         def _base_code(pc: str) -> str:
             try:
@@ -961,11 +1030,19 @@ class LibraryModel(QObject):
             except Exception: return (pc or "").strip().upper()
 
         q = (self._search_query or "").strip().lower()
+        fm = self._filter_mode
         filtered = []
         for s in self._all_summaries:
+            # 필터 적용
+            if fm == 1 and not getattr(s, "has_canonical", False): continue
+            if fm == 2 and getattr(s, "has_canonical", False): continue
+            if fm == 3 and not getattr(s, "folder_path", None): continue
+            if fm == 4 and not (getattr(s, "has_ko_srt", False) or getattr(s, "has_ja_srt", False)): continue
+
             if q:
                 gk = getattr(s, "genres_ko", None) or ""
-                blob = f"{s.product_code} {s.title_ko} {s.actors_ko} {gk}".lower()
+                mk = getattr(s, "maker_ko", None) or ""
+                blob = f"{s.product_code} {s.title_ko} {s.actors_ko} {gk} {mk}".lower()
                 if q not in blob:
                     continue
             filtered.append(s)

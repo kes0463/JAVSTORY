@@ -10,11 +10,15 @@ Popup {
     modal: true
     dim: true
     focus: true
+    /** 바깥 클릭으로 닫히면 알림 맥락이 사라져 인박스로 모으는 흐름과 충돌하므로 ESC·닫기만 허용 */
+    closePolicy: Popup.CloseOnEscape
     padding: Theme.spacingMd
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
     width: Math.min(560, Overlay.overlay.width - 48)
     z: 150
+
+    signal resolved(string productCode)
 
     property string productCode: ""
     property string oldPath: ""
@@ -132,8 +136,10 @@ Popup {
                         text: (index + 1) + ". 연결 → " + modelData
                         primary: false
                         onClicked: {
-                            if (LibraryModel.bindFolderForced(root.productCode, modelData, true))
+                            if (LibraryModel.bindFolderForced(root.productCode, modelData, true)) {
+                                root.resolved(root.productCode)
                                 root.close()
+                            }
                         }
                     }
                 }
@@ -184,8 +190,10 @@ Popup {
             if (path.startsWith("file:///"))
                 path = path.replace("file:///", "")
             path = decodeURIComponent(path)
-            if (LibraryModel.bindFolderForced(root.productCode, path, true))
+            if (LibraryModel.bindFolderForced(root.productCode, path, true)) {
+                root.resolved(root.productCode)
                 root.close()
+            }
         }
     }
 }

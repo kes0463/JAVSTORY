@@ -92,6 +92,12 @@ class STTQueueModel(QAbstractListModel):
 
 
 class ProcessingModel(QObject):
+    _instance = None
+
+    @staticmethod
+    def instance() -> ProcessingModel | None:
+        return ProcessingModel._instance
+
     currentFileChanged = Signal()
     progressPercentChanged = Signal()
     progressMessageChanged = Signal()
@@ -102,6 +108,7 @@ class ProcessingModel(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        ProcessingModel._instance = self
         self._current_file = ""
         self._progress_percent = 0
         self._progress_message = ""
@@ -258,13 +265,12 @@ class ProcessingModel(QObject):
                 from javstory.utils.product_code import extract_product_code_from_path
                 pc = extract_product_code_from_path(srt_path)
                 if pc:
-                    from gui.main_window import MainWindow
-                    # 전역 인스턴스 접근 가정
-                    mw = MainWindow.instance()
-                    if mw and hasattr(mw, "libraryModel"):
-                        mw.libraryModel.refreshProduct(pc)
-            except Exception:
-                pass
+                    from gui.models.library_model import LibraryModel
+                    lib = LibraryModel.instance()
+                    if lib:
+                        lib.refreshProduct(pc)
+            except Exception as e:
+                print(f"[ProcessingModel] STT 완료 후 갱신 실패: {e}")
 
         if self._queue_mode:
             if not success and "중단" in message:
@@ -336,23 +342,19 @@ class ProcessingModel(QObject):
         # [추가] 라이브러리 상태 갱신
         if success:
             try:
-                # 현재 작업 중인 파일명에서 품번 추출 시도
                 fn = self._current_file
                 # "[1/5] MIUM-123" 형태일 수 있으므로 파싱
                 import re
                 m = re.search(r"\]\s+(.+)$", fn)
-                if m: fn = m.group(1)
+                if m: fn = m.group(1).strip()
                 
                 from javstory.utils.product_code import extract_product_code_from_path
                 pc = extract_product_code_from_path(fn)
                 if pc:
-                    from gui.main_window import JAVStoryMainWindow
-                    mw = JAVStoryMainWindow.instance()
-                    if mw and hasattr(mw, "library_view"):
-                         # LibraryView.qml 내부의 LibraryModel은 싱글톤이 아닐 수 있으므로 
-                         # 백엔드 싱글톤인 LibraryModel을 직접 참조하는 것이 안전
-                         from gui.models.library_model import LibraryModel
-                         LibraryModel.instance().refreshProduct(pc)
+                    from gui.models.library_model import LibraryModel
+                    lib = LibraryModel.instance()
+                    if lib:
+                        lib.refreshProduct(pc)
             except Exception as e:
                 print(f"[ProcessingModel] 자막 완료 후 갱신 실패: {e}")
 

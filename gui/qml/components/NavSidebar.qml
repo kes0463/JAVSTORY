@@ -7,7 +7,10 @@ Rectangle {
 
     property int currentIndex: 0
     property bool collapsed: false
+    /** 폴더 연결 알림 대기 건수 (사이드바 배지) */
+    property int folderAlertCount: 0
     signal navigate(int index)
+    signal openFolderAlerts()
 
     width: collapsed ? 72 : 260
     Behavior on width { NumberAnimation { duration: Theme.animNormal; easing.type: Easing.OutCubic } }
@@ -127,7 +130,7 @@ Rectangle {
         }
     }
 
-    // ── 하단: 설정 ──────────────────────────────────
+    // ── 하단: 알림 + 설정 ────────────────────────────
     Column {
         anchors.bottom: parent.bottom
         anchors.left: parent.left
@@ -135,6 +138,71 @@ Rectangle {
         spacing: 0
 
         Rectangle { width: parent.width; height: 1; color: Theme.glassBorder }
+
+        // 폴더 연결 알림 인박스
+        Rectangle {
+            width: root.width
+            height: 48
+            color: folderBellMouse.containsMouse ? Theme.navHover : "transparent"
+            Behavior on color { ColorAnimation { duration: Theme.animFast } }
+
+            Row {
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.spacingMd
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Theme.spacingSm + 4
+
+                Item {
+                    width: 28
+                    height: 28
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "\uD83D\uDD14"
+                        font.pixelSize: 18
+                    }
+
+                    Rectangle {
+                        visible: root.folderAlertCount > 0
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.rightMargin: -4
+                        anchors.topMargin: -4
+                        width: Math.max(18, badgeLabel.implicitWidth + 6)
+                        height: 18
+                        radius: 9
+                        color: Theme.error
+
+                        Label {
+                            id: badgeLabel
+                            anchors.centerIn: parent
+                            text: root.folderAlertCount > 99 ? "99+" : root.folderAlertCount
+                            color: "#FFFFFF"
+                            font.pixelSize: 11
+                            font.bold: true
+                        }
+                    }
+                }
+
+                Text {
+                    visible: !root.collapsed
+                    text: "폴더 알림"
+                    font.pixelSize: Theme.fontBody
+                    font.weight: Font.Normal
+                    color: Theme.textSecondary
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
+            MouseArea {
+                id: folderBellMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openFolderAlerts()
+            }
+        }
 
         Rectangle {
             width: root.width

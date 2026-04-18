@@ -27,6 +27,7 @@ def create_engine(app) -> QQmlApplicationEngine:
     from gui.models.library_model import LibraryModel
     from gui.models.settings_model import SettingsModel
     from gui.models.folder_explorer_model import FolderExplorerModel
+    from gui.folder_binding_inbox_store import FolderBindingInboxStore
 
     ctx = engine.rootContext()
 
@@ -42,6 +43,7 @@ def create_engine(app) -> QQmlApplicationEngine:
     settings = SettingsModel(parent=app)
     print("[UI] Initializing FolderExplorerModel...")
     folder_explorer = FolderExplorerModel(parent=app)
+    folder_binding_inbox_store = FolderBindingInboxStore(parent=app)
 
     print("[UI] Registering context properties...")
     ctx.setContextProperty("DashboardModel", dashboard)
@@ -50,6 +52,7 @@ def create_engine(app) -> QQmlApplicationEngine:
     ctx.setContextProperty("LibraryModel", library)
     ctx.setContextProperty("SettingsModel", settings)
     ctx.setContextProperty("FolderExplorerModel", folder_explorer)
+    ctx.setContextProperty("FolderBindingInboxStore", folder_binding_inbox_store)
 
     from gui.folder_watch_service import FolderMoveWatchService
 

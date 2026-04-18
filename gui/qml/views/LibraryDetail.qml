@@ -32,6 +32,12 @@ Item {
     id: root
     signal back()
 
+    function searchAndGoBack(q) {
+        if (!q) return
+        LibraryModel.searchQuery = q.trim()
+        root.back()
+    }
+
     /// 부모(LibraryView)에서 Shortcut 활성 조건용
     readonly property bool lightboxVisible: lightboxOverlay.visible
 
@@ -1215,6 +1221,40 @@ Item {
                     visible: !LibraryModel.detailEditing
                     onClicked: LibraryModel.beginDetailEdit()
                 }
+
+                ActionButton {
+                    text: "\u23F1 전사 시작"
+                    primary: false
+                    neonGlow: true
+                    visible: !LibraryModel.detailEditing
+                    onClicked: {
+                        if (LibraryModel.detail.folderPath === "") {
+                            window.showToast("동영상을 전사하려면 먼저 폴더를 연결해주세요.", "info")
+                            root.openFolderPicker()
+                            return
+                        }
+                        LibraryModel.startSTTForDetail(LibraryModel.detail.productCode, LibraryModel.detail.folderPath)
+                    }
+                }
+
+                ActionButton {
+                    text: "\u2710 자막 생성"
+                    primary: false
+                    visible: !LibraryModel.detailEditing
+                    onClicked: {
+                        if (LibraryModel.detail.folderPath === "") {
+                            window.showToast("자막을 생성하려면 먼저 폴더를 연결해주세요.", "info")
+                            root.openFolderPicker()
+                            return
+                        }
+                        if (!LibraryModel.detail.hasJaSrt) {
+                            window.showToast("먼저 전사(STT)를 완료해야 자막을 생성할 수 있습니다.", "warning")
+                            return
+                        }
+                        LibraryModel.startSubtitleForDetail(LibraryModel.detail.productCode, LibraryModel.detail.folderPath)
+                    }
+                }
+
                 ActionButton {
                     text: "저장"
                     primary: true
@@ -1433,9 +1473,19 @@ Item {
                                         }
 
                                         delegate: Text {
+                                            id: actorText
                                             text: modelData + (index < actorRep.count - 1 ? ", " : "")
                                             font.pixelSize: Theme.fontBody
-                                            color: Theme.textSecondary
+                                            color: actorMa.containsMouse ? Theme.accentNeon : Theme.textSecondary
+                                            font.underline: actorMa.containsMouse
+
+                                            MouseArea {
+                                                id: actorMa
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: root.searchAndGoBack(modelData)
+                                            }
                                         }
                                     }
                                 }
@@ -1444,10 +1494,22 @@ Item {
                             Row {
                                 spacing: Theme.spacingMd
                                 SelectableText {
+                                    id: makerText
                                     text: LibraryModel.detail.makerKo || ""
                                     font.pixelSize: Theme.fontBody
-                                    color: Theme.textMuted
+                                    color: makerMa.containsMouse ? Theme.accentNeon : Theme.textMuted
                                     visible: text !== ""
+                                    font.underline: makerMa.containsMouse
+
+                                    MouseArea {
+                                        id: makerMa
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.searchAndGoBack(LibraryModel.detail.makerKo)
+                                        // SelectableText가 클릭을 가로채지 않도록 acceptedButtons: Qt.NoButton을 사용했었으나, 
+                                        // 여기서는 검색 트리거가 우선이므로 기본 동작을 가로채도 됨.
+                                    }
                                 }
                                 SelectableText {
                                     text: LibraryModel.detail.releaseDate ? ("📅 " + LibraryModel.detail.releaseDate) : ""
@@ -1466,23 +1528,38 @@ Item {
                                     model: (LibraryModel.detail.genresKo || "").split(",")
 
                                     delegate: Rectangle {
-                                        height: 22
-                                        width: genreLabel.width + 14
-                                        radius: 4
+                                        id: genreChip
+                                        height: 24
+                                        width: genreLabel.width + 16
+                                        radius: 6
                                         visible: {
                                             var t = modelData.trim()
                                             return t.length > 0 && t.indexOf("단축키") < 0
                                         }
-                                        color: Qt.rgba(Theme.accentNeon.r, Theme.accentNeon.g, Theme.accentNeon.b, 0.12)
-                                        border.color: Qt.rgba(Theme.accentNeon.r, Theme.accentNeon.g, Theme.accentNeon.b, 0.3)
+                                        color: genreMa.containsMouse 
+                                            ? Qt.rgba(Theme.accentNeon.r, Theme.accentNeon.g, Theme.accentNeon.b, 0.25)
+                                            : Qt.rgba(Theme.accentNeon.r, Theme.accentNeon.g, Theme.accentNeon.b, 0.12)
+                                        border.color: genreMa.containsMouse ? Theme.accentNeon : Qt.rgba(Theme.accentNeon.r, Theme.accentNeon.g, Theme.accentNeon.b, 0.3)
                                         border.width: 1
+                                        scale: genreMa.containsMouse ? 1.05 : 1.0
+                                        Behavior on scale { NumberAnimation { duration: 120 } }
+                                        Behavior on color { ColorAnimation { duration: 120 } }
 
                                         Text {
                                             id: genreLabel
                                             anchors.centerIn: parent
                                             text: modelData.trim()
                                             font.pixelSize: 13
+                                            font.weight: genreMa.containsMouse ? Font.Bold : Font.Normal
                                             color: Theme.accentNeon
+                                        }
+
+                                        MouseArea {
+                                            id: genreMa
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: root.searchAndGoBack(modelData.trim())
                                         }
                                     }
                                 }

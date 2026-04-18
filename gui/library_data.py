@@ -71,25 +71,33 @@ def canonical_quick_stats(product_code: str) -> tuple[bool, int, int, str]:
     return True, len(scenes), n_stills, prev
 
 
-def _first_video_in_dir(d: Path, depth=0) -> Path | None:
+def scan_videos_in_dir(d: Path, depth=0) -> list[Path]:
+    """디렉토리 내 모든 동영상 파일 리스트 반환."""
     if not d.is_dir():
-        return None
+        return []
     from javstory.library.video_ext import is_video_file
 
-    # 1단계: 직하위 파일 우선 탐색
-    files = sorted(list(d.iterdir()))
-    for p in files:
-        if p.is_file() and is_video_file(p):
-            return p
-    
-    # 2단계: 하위 폴더 재귀 탐색 (최대 깊이 2단계)
-    if depth < 2:
+    found = []
+    # 1단계: 직하위 파일 탐색
+    try:
+        files = sorted(list(d.iterdir()))
         for p in files:
-            if p.is_dir():
-                res = _first_video_in_dir(p, depth + 1)
-                if res:
-                    return res
-    return None
+            if p.is_file() and is_video_file(p):
+                found.append(p)
+        
+        # 2단계: 하위 폴더 재귀 탐색 (최대 깊이 2단계)
+        if depth < 2:
+            for p in files:
+                if p.is_dir():
+                    found.extend(scan_videos_in_dir(p, depth + 1))
+    except OSError:
+        pass
+    return found
+
+
+def _first_video_in_dir(d: Path, depth=0) -> Path | None:
+    res = scan_videos_in_dir(d, depth)
+    return res[0] if res else None
 
 
 SELF_SUBTITLE_MARKER = "자체자막"
@@ -253,9 +261,15 @@ def compute_library_lamp_flags(
 
 def guess_video_path_for_product(product_code: str, folder_path: str | None = None) -> Path | None:
     """작품 폴더(DB 저장 경로, 라이브러리, MEDIA_ROOT) 직하위에서 첫 동영상 탐색."""
+    res = find_all_video_paths_for_product(product_code, folder_path)
+    return res[0] if res else None
+
+
+def find_all_video_paths_for_product(product_code: str, folder_path: str | None = None) -> list[Path]:
+    """작품 폴더들에서 해당 품번과 관련된 모든 동영상 탐색 (멀티파트 대응)."""
     pc = (product_code or "").strip().upper()
     if not pc:
-        return None
+        return []
     from javstory.config.app_config import MEDIA_ROOT
 
     search_dirs = []
@@ -264,11 +278,20 @@ def guess_video_path_for_product(product_code: str, folder_path: str | None = No
     
     search_dirs.extend([work_library_dir(pc), MEDIA_ROOT / pc])
 
+    all_found = []
+    seen = set()
+    
     for base in search_dirs:
-        v = _first_video_in_dir(base)
-        if v is not None:
-            return v
-    return None
+        videos = scan_videos_in_dir(base)
+        for v in videos:
+            if v.absolute() in seen:
+                continue
+            # 품번이 포함되어 있는지 (대소문자 무시) 확인하여 관련성 체크
+            if pc in v.name.upper():
+                all_found.append(v)
+                seen.add(v.absolute())
+    
+    return all_found
 
 
 def _pipeline_stage(
@@ -434,7 +457,7 @@ def filter_summaries(
         if canonical_filter == "no_canonical" and s.has_canonical:
             continue
         if q:
-            blob = f"{s.product_code} {s.title_ko} {s.actors_ko}".lower()
+            blob = f"{s.product_code} {s.title_ko} {s.actors_ko} {s.maker_ko}".lower()
             if q not in blob:
                 continue
         out.append(s)

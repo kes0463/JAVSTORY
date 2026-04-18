@@ -243,10 +243,14 @@ class HybridJavCrawler:
         else:
             co.headless(True)
 
-        page = ChromiumPage(co)
+        page = None
         data: dict[str, Any] = {}
         slug = expected_product_code or ""
         try:
+            page = ChromiumPage(co)
+            try: browser_pid = page.process_id
+            except: pass
+            
             # 유저 에이전트 및 핑거프린트 노출 최소화
             page.set.user_agent(_NJAV_UA)
             
@@ -347,11 +351,25 @@ class HybridJavCrawler:
             _print_scraped_preview(data)
             return data
         except Exception as e:
-            print(f"[Hybrid] 추출 중 에러: {e}")
+            msg = str(e).encode('utf-8', 'replace').decode('utf-8', 'replace')
+            print(f"[Hybrid] 추출 중 에러: {msg}")
             return {}
         finally: 
-            try: page.quit()
+            try: 
+                if page:
+                    page.quit()
             except: pass
+            
+            # [강력 조치] 프로세스 잔류 방지 (특히 Headless 모드 좀비 방어)
+            if browser_pid:
+                try:
+                    import psutil
+                    proc = psutil.Process(browser_pid)
+                    if proc.is_running():
+                        proc.kill() # 확실한 종료
+                        log_ts(f"[Hybrid] 브라우저 프로세스(PID:{browser_pid}) 강제 종료 완료")
+                except: pass
+
             # 작업 종료 후 임시 폴더 삭제 시도 (용량 관리)
             if 'tmp_user_dir' in locals() and tmp_user_dir.exists():
                 try: shutil.rmtree(tmp_user_dir, ignore_errors=True)

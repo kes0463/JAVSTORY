@@ -135,14 +135,27 @@ def run_stable_ts(
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
     emit("post", 88, "세그먼트 후처리: split_by_length(50) -> split_by_duration(10) -> merge_by_gap(0.1)")
     check_cancel()
-    processed = (
-        result.split_by_length(50)
-        .split_by_duration(10.0)
-        .merge_by_gap(0.1)
-    )
+    
+    # [수정] 특정 조건(무음 등)에서 split_by_duration 등이 ValueError(argmin of empty)를 던질 수 있음.
+    # 이 경우 후처리를 포기하고 원본 전사 결과(result)를 사용해 크래시를 방지함.
+    try:
+        processed = (
+            result.split_by_length(50)
+            .split_by_duration(10.0)
+            .merge_by_gap(0.1)
+        )
+    except Exception as e:
+        if logger:
+            logger(f"[경고] 세그먼트 후처리(분할/병합) 중 에러 발생: {e}. 원본 결과를 사용합니다.")
+        processed = result
+
     processed.to_srt_vtt(str(interim_srt), segment_level=True, word_level=False)
     emit("write", 95, f"SRT 저장(임시): {interim_srt.name}")
     return interim_srt, processed
