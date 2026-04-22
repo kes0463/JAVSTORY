@@ -84,10 +84,12 @@ def get_pipeline_status(
     product_code: str,
     video_path: str | Path | None = None,
     work_dir: Path | None = None,
+    harvest_ok: bool | None = None,
 ) -> ProductPipelineStatus:
     """
     품번·영상 경로 기준 산출물 존재 여부(스킵 판단용).
     `video_path`가 없으면 STT/자막 파일 존재는 판단하지 않는다.
+    `harvest_ok`가 제공되면 DB 조회를 생략한다.
     """
     pc = (product_code or "").strip().upper()
     vp = Path(video_path).expanduser().resolve() if video_path else None
@@ -100,23 +102,24 @@ def get_pipeline_status(
         srt_plain = _srt_next_to_video(vp)
         srt_exists = srt_plain.is_file()
 
-    harvest_ok = False
-    try:
-        from javstory.harvest.database import get_db_session, JAVMetadata
-
-        session = get_db_session()
+    ok = harvest_ok
+    if ok is None:
+        ok = False
         try:
-            row = session.query(JAVMetadata).filter_by(product_code=pc).first()
-            harvest_ok = bool(row and (row.title_ko or row.title_ja or row.original_title))
-        finally:
-            session.close()
-    except Exception:
-        pass
+            from javstory.harvest.database import get_db_session, JAVMetadata
+            session = get_db_session()
+            try:
+                row = session.query(JAVMetadata).filter_by(product_code=pc).first()
+                ok = bool(row and (row.title_ko or row.title_ja or row.original_title))
+            finally:
+                session.close()
+        except Exception:
+            pass
 
     return ProductPipelineStatus(
         product_code=pc,
         video_path=vp,
-        harvest_in_db=harvest_ok,
+        harvest_in_db=ok,
         ja_srt_path=ja,
         ja_srt_exists=bool(ja and ja.is_file()),
         ko_srt_path=ko,

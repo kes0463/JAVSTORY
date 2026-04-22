@@ -41,6 +41,7 @@ test_assets/
 tools/goodbyedpi/**/*.exe
 tools/goodbyedpi/**/*.dll
 tools/goodbyedpi/**/*.sys
+tools/lada/
 
 # venv
 venv/

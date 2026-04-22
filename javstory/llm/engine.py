@@ -270,7 +270,7 @@ class MultiTierRouter:
         if isinstance(max_tokens, int) and max_tokens > 0:
             kwargs["max_tokens"] = max_tokens
 
-        # Ollama OpenAI 호환: thinking 끄기/켜기 등 — `extra_body`(예: {"think": false})
+        # OpenRouter/Ollama OpenAI 호환: provider별 extra_body 지원
         if provider == "ollama":
             xb = model_cfg.get("ollama_extra_body")
             ot = model_cfg.get("ollama_think", None)
@@ -278,6 +278,10 @@ class MultiTierRouter:
                 kwargs["extra_body"] = dict(xb)
             elif ot is not None:
                 kwargs["extra_body"] = {"think": bool(ot)}
+        elif provider == "openrouter":
+            oxb = model_cfg.get("openrouter_extra_body")
+            if isinstance(oxb, dict) and oxb:
+                kwargs["extra_body"] = dict(oxb)
 
         merged_headers = _merge_openrouter_headers(model_cfg, extra_headers)
         if merged_headers and provider == "openrouter" and _chat_completions_accepts_extra_headers(client):

@@ -5,15 +5,20 @@ from typing import Optional
 import asyncio
 from urllib.parse import urlparse
 
-from javstory.config.app_config import MEDIA_ROOT, WESERV_IMAGE_PROXY
+from javstory.config.app_config import E_MEDIA_ROOT, MEDIA_ROOT, WESERV_IMAGE_PROXY
 
 class MetadataAssetsHandler:
     """
     크롤링된 메타데이터 자산(표지 이미지 등)을 로컬로 다운로드하고 관리하는 클래스.
     """
     def __init__(self):
-        # 0. 미디어 루트 디렉토리 생성
-        MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+        # 0. 미디어 루트 디렉토리 생성 (신규 HDD 루트 우선)
+        try:
+            E_MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+            self._root = E_MEDIA_ROOT
+        except Exception:
+            MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+            self._root = MEDIA_ROOT
 
     async def download_cover_image(self, url: str, product_code: str) -> Optional[str]:
         """
@@ -24,7 +29,7 @@ class MetadataAssetsHandler:
             return None
 
         # 1. 대상 디렉토리 준비
-        target_dir = MEDIA_ROOT / product_code.upper()
+        target_dir = Path(self._root) / product_code.upper()
         target_dir.mkdir(parents=True, exist_ok=True)
         
         save_path = target_dir / "cover.jpg"

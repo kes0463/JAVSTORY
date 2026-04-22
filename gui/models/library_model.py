@@ -14,6 +14,25 @@ from PySide6.QtCore import (
 from gui.models.detail_edit_draft import DetailEditDraft
 from gui.models.scene_edit_model import SceneEditModel
 from gui.library_data import find_all_video_paths_for_product
+from PySide6.QtCore import QThread
+
+
+def _preview_path_for(pc: str, e_root: Path | None, legacy_root: Path | None) -> str:
+    code = (pc or "").strip().upper()
+    if not code:
+        return ""
+    cand: list[Path] = []
+    if e_root:
+        cand.append(Path(e_root) / code / "Preview" / "preview.webp")
+    if legacy_root:
+        cand.append(Path(legacy_root) / code / "Preview" / "preview.webp")
+    for p in cand:
+        try:
+            if p.is_file() and p.stat().st_size > 0:
+                return str(p.resolve())
+        except Exception:
+            continue
+    return ""
 
 
 class WorkListModel(QAbstractListModel):
@@ -22,6 +41,7 @@ class WorkListModel(QAbstractListModel):
     TitleJaRole = Qt.ItemDataRole.UserRole + 3
     ActorsKoRole = Qt.ItemDataRole.UserRole + 4
     CoverPathRole = Qt.ItemDataRole.UserRole + 5
+    PreviewPathRole = Qt.ItemDataRole.UserRole + 15
     SceneCountRole = Qt.ItemDataRole.UserRole + 6
     PipelineStageRole = Qt.ItemDataRole.UserRole + 7
     ReleaseDateRole = Qt.ItemDataRole.UserRole + 8
@@ -31,6 +51,7 @@ class WorkListModel(QAbstractListModel):
     HasJaSrtRole = Qt.ItemDataRole.UserRole + 12
     HasKoSrtRole = Qt.ItemDataRole.UserRole + 13
     LampHardcodedRole = Qt.ItemDataRole.UserRole + 14
+    LampMopaRole = Qt.ItemDataRole.UserRole + 16
 
     _ROLE_MAP = {
         ProductCodeRole: "product_code",
@@ -38,6 +59,7 @@ class WorkListModel(QAbstractListModel):
         TitleJaRole: "title_ja",
         ActorsKoRole: "actors_ko",
         CoverPathRole: "cover_path",
+        PreviewPathRole: "preview_path",
         SceneCountRole: "scene_count",
         PipelineStageRole: "pipeline_stage",
         ReleaseDateRole: "release_date",
@@ -47,6 +69,7 @@ class WorkListModel(QAbstractListModel):
         HasJaSrtRole: "has_ja_srt",
         HasKoSrtRole: "has_ko_srt",
         LampHardcodedRole: "lamp_hardcoded",
+        LampMopaRole: "lamp_mopa",
     }
 
     def __init__(self, parent=None):
@@ -60,6 +83,7 @@ class WorkListModel(QAbstractListModel):
             self.TitleJaRole: b"titleJa",
             self.ActorsKoRole: b"actorsKo",
             self.CoverPathRole: b"coverPath",
+            self.PreviewPathRole: b"previewPath",
             self.SceneCountRole: b"sceneCount",
             self.PipelineStageRole: b"pipelineStage",
             self.ReleaseDateRole: b"releaseDate",
@@ -69,6 +93,7 @@ class WorkListModel(QAbstractListModel):
             self.HasJaSrtRole: b"hasJaSrt",
             self.HasKoSrtRole: b"hasKoSrt",
             self.LampHardcodedRole: b"lampHardcoded",
+            self.LampMopaRole: b"lampMopa",
         }
 
     def rowCount(self, parent=QModelIndex()):
@@ -138,6 +163,10 @@ class LibraryDetailObject(QObject):
     @Property(str, notify=changed)
     def grokScenesJson(self): return self._get("grok_scenes_json", "[]")
     @Property(bool, notify=changed)
+    def grokVerified(self): return self._get("grok_verified", False)
+    @Property(str, notify=changed)
+    def grokMismatchReason(self): return self._get("grok_mismatch_reason", "")
+    @Property(bool, notify=changed)
     def isHardcoded(self): return self._get("is_hardcoded", False)
     @Property(bool, notify=changed)
     def hasJaSrt(self): return self._get("has_ja_srt", False)
@@ -145,10 +174,38 @@ class LibraryDetailObject(QObject):
     def hasKoSrt(self): return self._get("has_ko_srt", False)
     @Property(bool, notify=changed)
     def lampHardcoded(self): return self._get("lamp_hardcoded", False)
+    @Property(bool, notify=changed)
+    def isMopa(self): return self._get("is_mopa", False)
+    @Property(bool, notify=changed)
+    def lampMopa(self): return self._get("lamp_mopa", False)
     @Property(str, notify=changed)
     def folderPath(self): return self._get("folder_path", "")
     @Property(str, notify=changed)
     def digestPath(self): return self._get("digest_path", "")
+    @Property(str, notify=changed)
+    def highlightPath(self): return self._get("highlight_path", "")
+
+
+class LibraryReloadWorker(QThread):
+    finished = Signal(list)
+    error = Signal(str)
+
+    def __init__(self, *, limit: int = 600, offset: int = 0, parent=None):
+        super().__init__(parent)
+        self._limit = int(limit)
+        self._offset = int(offset)
+
+    def run(self):
+        try:
+            from javstory.harvest.database import get_db_session
+            from gui.library_data import load_library_summaries_fast_paged
+            with get_db_session() as session:
+                summaries = load_library_summaries_fast_paged(
+                    session, limit=self._limit, offset=self._offset
+                )
+                self.finished.emit(summaries)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class LibraryModel(QObject):
@@ -176,9 +233,14 @@ class LibraryModel(QObject):
     requestFolderSelection = Signal(str)
     isGeneratingDigestChanged = Signal()
     digestProgressChanged = Signal()
+    isGeneratingHighlightChanged = Signal()
+    highlightProgressChanged = Signal()
     isExtractingSnapshotsChanged = Signal()
     snapshotProgressMsgChanged = Signal()
     detailEditingChanged = Signal()
+    isLoadingChanged = Signal()
+    canLoadMoreChanged = Signal()
+    loadedCountChanged = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -193,11 +255,22 @@ class LibraryModel(QObject):
         self._digest_worker = None
         self._is_generating_digest = False
         self._digest_progress = 0
+        self._highlight_worker = None
+        self._is_generating_highlight = False
+        self._highlight_progress = 0
         self._is_extracting_snapshots = False
         self._snapshot_progress_msg = ""
         self._detail_editing = False
         self._edit_draft = DetailEditDraft(self)
         self._scene_edit = SceneEditModel(self)
+        self._is_loading = False
+        self._reload_worker = None
+        self._page_size = 600
+        self._page_offset = 0
+        self._can_load_more = True
+        self._is_loading_more = False
+        # (base_pc -> preview_path) 캐시: `_rebuild()`에서 per-item disk stat 폭탄 방지용
+        self._preview_path_cache: dict[str, str] = {}
 
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -219,6 +292,20 @@ class LibraryModel(QObject):
     @Property(bool, notify=detailEditingChanged)
     def detailEditing(self) -> bool:
         return self._detail_editing
+
+    @Property(bool, notify=isLoadingChanged)
+    def isLoading(self): return self._is_loading
+
+    @Property(bool, notify=canLoadMoreChanged)
+    def canLoadMore(self) -> bool:
+        return bool(self._can_load_more and not self._is_loading and not self._is_loading_more)
+
+    @Property(int, notify=loadedCountChanged)
+    def loadedCount(self) -> int:
+        try:
+            return len(self._all_summaries or [])
+        except Exception:
+            return 0
 
     @Property(str, notify=searchQueryChanged)
     def searchQuery(self): return self._search_query
@@ -266,6 +353,22 @@ class LibraryModel(QObject):
             self._digest_progress = v
             self.digestProgressChanged.emit()
 
+    @Property(bool, notify=isGeneratingHighlightChanged)
+    def isGeneratingHighlight(self): return self._is_generating_highlight
+    @isGeneratingHighlight.setter
+    def isGeneratingHighlight(self, v: bool):
+        if v != self._is_generating_highlight:
+            self._is_generating_highlight = v
+            self.isGeneratingHighlightChanged.emit()
+
+    @Property(int, notify=highlightProgressChanged)
+    def highlightProgress(self): return self._highlight_progress
+    @highlightProgress.setter
+    def highlightProgress(self, v: int):
+        if v != self._highlight_progress:
+            self._highlight_progress = v
+            self.highlightProgressChanged.emit()
+
     @Property(bool, notify=isExtractingSnapshotsChanged)
     def isExtractingSnapshots(self): return self._is_extracting_snapshots
     @isExtractingSnapshots.setter
@@ -286,22 +389,96 @@ class LibraryModel(QObject):
 
     @Slot()
     def reload(self):
-        try:
-            from javstory.harvest.database import get_db_session
-            from gui.library_data import load_library_summaries_from_session
-            session = get_db_session()
+        if self._is_loading:
+            return
+        
+        self._is_loading = True
+        self.isLoadingChanged.emit()
+
+        if self._reload_worker and self._reload_worker.isRunning():
+            self._reload_worker.terminate()
+            self._reload_worker.wait()
+
+        self._page_offset = 0
+        self._can_load_more = True
+        self.canLoadMoreChanged.emit()
+        self.loadedCountChanged.emit()
+
+        self._reload_worker = LibraryReloadWorker(limit=self._page_size, offset=self._page_offset, parent=self)
+        self._reload_worker.finished.connect(self._on_reload_finished)
+        self._reload_worker.error.connect(self._on_reload_error)
+        self._reload_worker.start()
+
+    def _on_reload_finished(self, summaries):
+        self._all_summaries = list(summaries or [])
+        self._page_offset = len(self._all_summaries)
+        self._can_load_more = bool(len(self._all_summaries) >= self._page_size)
+        self._is_loading = False
+        self.isLoadingChanged.emit()
+        self.canLoadMoreChanged.emit()
+        self.loadedCountChanged.emit()
+        # 로드 결과가 바뀌면 preview cache도 초기화
+        self._preview_path_cache.clear()
+        self._rebuild()
+        self.summariesReloaded.emit()
+        self.toastMessage.emit(f"{len(self._all_summaries)}건 로드 완료", "success")
+
+    def _on_reload_error(self, err_msg):
+        self._is_loading = False
+        self.isLoadingChanged.emit()
+        self._all_summaries = []
+        self._preview_path_cache.clear()
+        self._page_offset = 0
+        self._can_load_more = True
+        self.canLoadMoreChanged.emit()
+        self.loadedCountChanged.emit()
+        self._rebuild()
+        self.summariesReloaded.emit()
+        self.toastMessage.emit(f"라이브러리 로드 실패: {err_msg}", "error")
+
+    @Slot()
+    def loadMore(self) -> None:
+        if self._is_loading or self._is_loading_more:
+            return
+        if not self._can_load_more:
+            return
+
+        self._is_loading_more = True
+        self.canLoadMoreChanged.emit()
+
+        w = LibraryReloadWorker(limit=self._page_size, offset=self._page_offset, parent=self)
+
+        def _done(new_items):
             try:
-                self._all_summaries = load_library_summaries_from_session(session)
+                items = list(new_items or [])
+                if items:
+                    self._all_summaries.extend(items)
+                    self._page_offset = len(self._all_summaries)
+                # 페이지가 가득 안 찼으면 더 이상 없음
+                self._can_load_more = bool(len(items) >= self._page_size)
             finally:
-                session.close()
-            self._rebuild()
-            self.summariesReloaded.emit()
-            self.toastMessage.emit(f"{len(self._all_summaries)}건 로드", "success")
-        except Exception as e:
-            self._all_summaries = []
-            self._rebuild()
-            self.summariesReloaded.emit()
-            self.toastMessage.emit(f"DB 로드 실패: {e}", "error")
+                self._is_loading_more = False
+                self.canLoadMoreChanged.emit()
+                self.loadedCountChanged.emit()
+                self._rebuild()
+                self.summariesReloaded.emit()
+                try:
+                    w.deleteLater()
+                except Exception:
+                    pass
+
+        def _err(msg):
+            self._is_loading_more = False
+            self.canLoadMoreChanged.emit()
+            self.toastMessage.emit(f"추가 로드 실패: {msg}", "error")
+            try:
+                w.deleteLater()
+            except Exception:
+                pass
+
+        w.finished.connect(_done)
+        w.error.connect(_err)
+        w.start()
 
     @Slot(str)
     def loadDetail(self, product_code: str):
@@ -332,11 +509,14 @@ class LibraryModel(QObject):
             "still_paths": [],
             "video_path": "",
             "is_hardcoded": s.is_hardcoded,
+            "is_mopa": getattr(s, "is_mopa", False),
             "has_ja_srt": s.has_ja_srt,
             "has_ko_srt": s.has_ko_srt,
             "lamp_hardcoded": s.lamp_hardcoded,
+            "lamp_mopa": getattr(s, "lamp_mopa", False),
             "folder_path": fp_bind,
             "digest_path": "",
+            "highlight_path": "",
         }
 
         try:
@@ -354,13 +534,53 @@ class LibraryModel(QObject):
         except Exception: pass
 
         try:
-            from javstory.translation.story_grok_module import story_context_cache_path, merge_story_context_tier
+            from javstory.translation.story_grok_module import (
+                story_context_cache_path,
+                story_context_cache_dir,
+                merge_story_context_tier,
+            )
             tier = merge_story_context_tier(None)
-            cp = story_context_cache_path(s.product_code, str(tier.get("model") or ""))
+            model = str(tier.get("model") or "")
+            cp = story_context_cache_path(s.product_code, model)
             if not cp.is_file():
-                cp = story_context_cache_path(s.product_code, "")
+                # 모델 슬러그 변경(:online 제거 등)로 캐시 파일명이 달라질 수 있어,
+                # 레거시 후보를 순차적으로 탐색한다.
+                legacy_hints = [
+                    "",
+                    f"{model}:online" if model and ":online" not in model else "",
+                    "x-ai/grok-4.1-fast:online",
+                    "grok-4-fast:online",
+                ]
+                cp2 = None
+                for hint in legacy_hints:
+                    if not hint:
+                        cand = story_context_cache_path(s.product_code, "")
+                    else:
+                        cand = story_context_cache_path(s.product_code, hint)
+                    if cand.is_file():
+                        cp2 = cand
+                        break
+
+                # 마지막 fallback: 동일 품번의 가장 최신 캐시(PC__*.json)를 사용
+                if cp2 is None:
+                    try:
+                        pc_prefix = f"{(s.product_code or '').strip().upper()}__"
+                        d = story_context_cache_dir()
+                        matches = [p for p in d.glob(f"{pc_prefix}*.json") if p.is_file()]
+                        if matches:
+                            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                            cp2 = matches[0]
+                    except Exception:
+                        cp2 = None
+
+                if cp2 is not None:
+                    cp = cp2
             if cp.is_file():
                 gj = json.loads(cp.read_text(encoding="utf-8"))
+                data["grok_verified"] = bool(gj.get("verification_ok") is True and gj.get("code_mismatch") is not True)
+                data["grok_mismatch_reason"] = str(gj.get("mismatch_reason") or "")
+
+                # 씬 데이터는 참고용으로라도 보이게 유지하되, UI에서 "미검증" 표시로 구분한다.
                 scenes_raw = gj.get("scenes") or []
                 grok_scenes = []
                 for sc in scenes_raw:
@@ -378,31 +598,79 @@ class LibraryModel(QObject):
             for p in data["still_paths"]: stills_set.add(str(Path(p).resolve()))
 
         try:
-            from javstory.config.app_config import DATA_ROOT
-            media_dir = Path(DATA_ROOT) / "media" / s.product_code
-            if media_dir.is_dir():
-                snap_dir = media_dir / "Snapshots"
+            from javstory.config.app_config import DATA_ROOT, E_MEDIA_ROOT, E_DATA_ROOT
+
+            # 신규 HDD 루트: E:\App\JAVSTORY\data\works\{product_code}\...
+            # 레거시 fallback:
+            # - E:\App\JAVSTORY\data\{product_code}\... (초기 이행 버전)
+            # - E:\App\JAVSTORY\data\media\{product_code}\... (이전 highlight 구현 시점)
+            # - D:\App\JAVSTORY\data\media\{product_code}\... (프로젝트 내부 레거시)
+            media_dir = Path(E_MEDIA_ROOT) / s.product_code
+            legacy_e_flat_dir = Path(E_DATA_ROOT) / s.product_code
+            legacy_e_media_dir = Path(E_DATA_ROOT) / "media" / s.product_code
+            legacy_media_dir = Path(DATA_ROOT) / "media" / s.product_code
+
+            bases = [media_dir, legacy_e_flat_dir, legacy_e_media_dir, legacy_media_dir]
+            base = next((b for b in bases if b.is_dir()), None)
+
+            if base is not None:
+                snap_dir = base / "Snapshots"
                 exts = ["*.jpg", "*.jpeg", "*.png", "*.webp"]
                 found = []
                 if snap_dir.is_dir():
                     for ext in exts: found.extend(snap_dir.glob(ext))
                 else:
-                    for ext in exts: found.extend(media_dir.glob(ext))
+                    for ext in exts: found.extend(base.glob(ext))
                 exclude_names = {"cover.jpg", "poster.jpg", "thumb.jpg", "cover.png", "poster.png", "cover.webp", "poster.webp"}
                 for f in found:
                     if f.name.lower() not in exclude_names: stills_set.add(str(f.resolve()))
                 
                 # mp4 다이제스트 파일 점검 (새로운 digest 전용 폴더 우선 탐색)
-                digest_file = media_dir / "digest" / "digest.mp4"
+                digest_file = base / "Digest" / "digest.mp4"
                 if not digest_file.exists():
                     digest_file = snap_dir / "digest.mp4"
                 if not digest_file.exists():
-                    digest_file = media_dir / "digest.mp4"
+                    digest_file = base / "digest.mp4"
                 if digest_file.is_file():
                     data["digest_path"] = str(digest_file.resolve())
 
             data["still_paths"] = sorted(list(stills_set))
         except Exception: pass
+
+        # 하이라이트 영상 (HDD 저장소: E:\App\JAVSTORY\data\{product_code}\Highlight\)
+        try:
+            pc = (s.product_code or "").strip().upper()
+            if pc:
+                from javstory.config.app_config import E_MEDIA_ROOT, E_DATA_ROOT, DATA_ROOT
+                highlight_dir = Path(E_MEDIA_ROOT) / pc / "Highlight"
+                legacy_e_flat_highlight_dir = Path(E_DATA_ROOT) / pc / "Highlight"
+                legacy_e_media_highlight_dir = Path(E_DATA_ROOT) / "media" / pc / "Highlight"
+                legacy_highlight_dir = Path(DATA_ROOT) / "media" / pc / "Highlight"
+                if not highlight_dir.is_dir():
+                    if legacy_e_flat_highlight_dir.is_dir():
+                        highlight_dir = legacy_e_flat_highlight_dir
+                    elif legacy_e_media_highlight_dir.is_dir():
+                        highlight_dir = legacy_e_media_highlight_dir
+                    elif legacy_highlight_dir.is_dir():
+                        highlight_dir = legacy_highlight_dir
+                # 우선순위: highlight.mp4 → FINAL_HIGHLIGHT_840x640.mp4 (레거시) → 첫 mp4
+                cand = [
+                    highlight_dir / "highlight.mp4",
+                    highlight_dir / "FINAL_HIGHLIGHT_840x640.mp4",
+                ]
+                hp = None
+                for p in cand:
+                    if p.is_file():
+                        hp = p
+                        break
+                if hp is None and highlight_dir.is_dir():
+                    mp4s = sorted(list(highlight_dir.glob("*.mp4")))
+                    if mp4s:
+                        hp = mp4s[0]
+                if hp is not None and hp.is_file():
+                    data["highlight_path"] = str(hp.resolve())
+        except Exception:
+            pass
 
         try:
             from gui.library_data import guess_video_path_for_product
@@ -441,7 +709,7 @@ class LibraryModel(QObject):
         try:
             from javstory.utils.product_code import extract_product_code_from_path
             from javstory.harvest.database import get_db_session, JAVMetadata
-            from gui.library_data import _first_video_in_dir
+            from gui.library_data import _first_video_in_dir, path_contains_self_subtitle_marker, path_contains_mopa_marker
 
             pc = (product_code or "").strip().upper()
             target_path = Path(folder_path)
@@ -469,6 +737,13 @@ class LibraryModel(QObject):
                 if row:
                     abs_path = str(target_path.resolve())
                     row.folder_path = abs_path
+                    # 폴더 연결(영상 경로 확정) 시점에 1회 자체자막 마커 감지 후 DB 저장
+                    try:
+                        v = _first_video_in_dir(target_path)
+                        row.is_hardcoded = bool(path_contains_self_subtitle_marker(v, abs_path, pc))
+                        row.is_mopa = bool(path_contains_mopa_marker(v, abs_path))
+                    except Exception:
+                        pass
                     session.commit()
                     if mismatch and force:
                         self.toastMessage.emit(f"강제 연결 저장: {abs_path}", "warning")
@@ -538,6 +813,85 @@ class LibraryModel(QObject):
                 session.close()
         except Exception as e:
             self.toastMessage.emit(f"연결 해제 실패: {e}", "error")
+
+    @Slot(str, bool)
+    def deleteFromLibrary(self, product_code: str, delete_files: bool = False):
+        """
+        라이브러리에서 작품 삭제.
+        - 기본: DB 메타데이터 삭제(같은 base 품번의 분할 파트 포함)
+        - 옵션: 로컬 산출물/미디어 폴더도 함께 삭제
+        """
+        try:
+            from javstory.utils.product_code import strip_split_suffixes
+            from javstory.harvest.database import get_db_session, JAVMetadata
+
+            pc_raw = (product_code or "").strip().upper()
+            if not pc_raw:
+                self.toastMessage.emit("품번이 없습니다.", "warning")
+                return
+            base = strip_split_suffixes(pc_raw) or pc_raw
+
+            session = get_db_session()
+            try:
+                # base 품번으로 묶인 모든 row 삭제 (멀티파트 포함)
+                rows = session.query(JAVMetadata).all()
+                targets = []
+                for r in rows:
+                    code = (getattr(r, "product_code", "") or "").strip().upper()
+                    if not code:
+                        continue
+                    if (strip_split_suffixes(code) or code) == base:
+                        targets.append(r)
+
+                if not targets:
+                    self.toastMessage.emit(f"DB에 품번 {base}가 없습니다.", "warning")
+                    return
+
+                for r in targets:
+                    session.delete(r)
+                session.commit()
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+
+            # 파일 삭제(선택)
+            if bool(delete_files):
+                try:
+                    import shutil
+                    from pathlib import Path
+                    from javstory.config.app_config import E_MEDIA_ROOT, E_DATA_ROOT, DATA_ROOT
+                    from javstory.library.paths import work_library_dir
+
+                    dirs = [
+                        work_library_dir(base),
+                        Path(E_MEDIA_ROOT) / base,
+                        Path(E_DATA_ROOT) / base,
+                        Path(E_DATA_ROOT) / "media" / base,
+                        Path(DATA_ROOT) / "media" / base,
+                    ]
+                    for d in dirs:
+                        try:
+                            if d.is_dir():
+                                shutil.rmtree(d, ignore_errors=True)
+                        except Exception:
+                            continue
+                except Exception as e:
+                    self.toastMessage.emit(f"파일 삭제 중 일부 실패: {e}", "warning")
+
+            # UI 갱신
+            try:
+                self._all_summaries = [s for s in (self._all_summaries or []) if (s.product_code or "").strip().upper() != base]
+            except Exception:
+                pass
+            self.reload()
+            self.toastMessage.emit(
+                f"삭제 완료: {base}" + (" (파일 포함)" if delete_files else ""),
+                "success",
+            )
+        except Exception as e:
+            self.toastMessage.emit(f"삭제 실패: {e}", "error")
 
     @Slot(str)
     def refreshProduct(self, product_code: str):
@@ -893,8 +1247,15 @@ class LibraryModel(QObject):
     @Slot(str, str)
     def generateSnapshots(self, product_code: str, video_path: str):
         if self._snapshot_worker and self._snapshot_worker.isRunning(): return
-        from javstory.config.app_config import DATA_ROOT
-        output_dir = Path(DATA_ROOT) / "media" / product_code / "Snapshots"
+        from javstory.config.app_config import E_MEDIA_ROOT, DATA_ROOT
+
+        base_root = Path(E_MEDIA_ROOT)
+        try:
+            base_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            base_root = Path(DATA_ROOT) / "media"
+
+        output_dir = base_root / product_code / "Snapshots"
         
         self.isExtractingSnapshots = True
         self.snapshotProgressMsg = "추출 준비 중..."
@@ -917,13 +1278,19 @@ class LibraryModel(QObject):
     @Slot(str, str)
     def generateDigest(self, product_code: str, video_path: str):
         if self._digest_worker and self._digest_worker.isRunning(): return
-        from javstory.config.app_config import DATA_ROOT
+        from javstory.config.app_config import E_MEDIA_ROOT, DATA_ROOT
         
         self.isGeneratingDigest = True
         self.digestProgress = 0
         
         # 전용 digest 폴더 아래에 digest.mp4 생성
-        output_dir = Path(DATA_ROOT) / "media" / product_code / "digest"
+        base_root = Path(E_MEDIA_ROOT)
+        try:
+            base_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            base_root = Path(DATA_ROOT) / "media"
+
+        output_dir = base_root / product_code / "Digest"
         output_dir.mkdir(parents=True, exist_ok=True)
         output_path = output_dir / "digest.mp4"
         
@@ -933,6 +1300,36 @@ class LibraryModel(QObject):
         self._digest_worker.progressUpdated.connect(self._on_digest_progress)
         self._digest_worker.start()
         self.toastMessage.emit("🎥 다이제스트 타임랩스 추출을 시작합니다...", "info")
+
+    @Slot(str, str)
+    def generateHighlight(self, product_code: str, video_path: str):
+        pc = (product_code or "").strip().upper()
+        if not pc:
+            self.toastMessage.emit("품번이 없습니다.", "warning")
+            return
+
+        # 전역 큐에 등록 (동시 실행 2개 제한)
+        try:
+            from gui.models.highlight_queue_model import HighlightQueueController
+            q = HighlightQueueController.instance()
+            if q:
+                q.enqueue(pc, video_path)
+            else:
+                self.toastMessage.emit("하이라이트 큐 모델을 찾을 수 없습니다.", "error")
+        except Exception as e:
+            self.toastMessage.emit(f"하이라이트 큐 등록 실패: {e}", "error")
+
+    @Slot(int)
+    def _on_highlight_progress(self, percent: int):
+        self.highlightProgress = percent
+
+    def _on_highlight_finished(self, success, message):
+        self.isGeneratingHighlight = False
+        if success:
+            self.toastMessage.emit(message, "success")
+            self.loadDetail(self._detail.productCode)  # 완료되면 UI 갱신 (highlightPath 업데이트)
+        else:
+            self.toastMessage.emit(message, "error")
 
     @Slot(int)
     def _on_digest_progress(self, percent: int):
@@ -953,19 +1350,25 @@ class LibraryModel(QObject):
             if not pc:
                 return
             from gui.library_data import guess_video_path_for_product
-            from javstory.config.app_config import DATA_ROOT
+            from javstory.config.app_config import DATA_ROOT, E_MEDIA_ROOT, E_DATA_ROOT
 
             vp = guess_video_path_for_product(pc, folder_abs)
             if vp is None or not vp.is_file():
                 return
 
-            snap_dir = Path(DATA_ROOT) / "media" / pc / "Snapshots"
-            if snap_dir.is_dir():
-                n = 0
-                for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
-                    n += len(list(snap_dir.glob(pattern)))
-                if n > 0:
-                    return
+            snap_dirs = [
+                Path(E_MEDIA_ROOT) / pc / "Snapshots",
+                Path(E_DATA_ROOT) / pc / "Snapshots",
+                Path(E_DATA_ROOT) / "media" / pc / "Snapshots",
+                Path(DATA_ROOT) / "media" / pc / "Snapshots",
+            ]
+            for snap_dir in snap_dirs:
+                if snap_dir.is_dir():
+                    n = 0
+                    for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+                        n += len(list(snap_dir.glob(pattern)))
+                    if n > 0:
+                        return
 
             self.toastMessage.emit("스냅샷이 없어 영상에서 자동 추출을 시작합니다.", "info")
             self.generateSnapshots(pc, str(vp))
@@ -1062,6 +1465,25 @@ class LibraryModel(QObject):
             return max(lst, key=score)
 
         merged_items = []
+        try:
+            from javstory.config.app_config import E_MEDIA_ROOT, DATA_ROOT
+            e_root = Path(E_MEDIA_ROOT)
+            legacy_root = Path(DATA_ROOT) / "media"
+        except Exception:
+            e_root = None
+            legacy_root = None
+
+        def preview_path_cached(base_pc: str) -> str:
+            key = (base_pc or "").strip().upper()
+            if not key:
+                return ""
+            hit = self._preview_path_cache.get(key)
+            if hit is not None:
+                return hit
+            v = _preview_path_for(key, e_root, legacy_root)
+            self._preview_path_cache[key] = v
+            return v
+
         for base_pc, lst in groups.items():
             rep = pick_rep(lst)
             max_scene = max((getattr(x, "scene_count", 0) or 0) for x in lst) if lst else 0
@@ -1075,6 +1497,7 @@ class LibraryModel(QObject):
                 "title_ja": getattr(rep, "title_ja", "") or "",
                 "actors_ko": getattr(rep, "actors_ko", "") or "",
                 "cover_path": getattr(rep, "cover_effective_path", None) or getattr(rep, "cover_local_path", None) or "",
+                "preview_path": preview_path_cached(base_pc),
                 "scene_count": max_scene,
                 "pipeline_stage": max_stage,
                 "release_date": getattr(rep, "release_date", "") or "",
@@ -1084,6 +1507,8 @@ class LibraryModel(QObject):
                 "has_ja_srt": any(bool(getattr(x, "has_ja_srt", False)) for x in lst),
                 "has_ko_srt": any(bool(getattr(x, "has_ko_srt", False)) for x in lst),
                 "lamp_hardcoded": any(bool(getattr(x, "lamp_hardcoded", False)) for x in lst),
+                "lamp_mopa": any(bool(getattr(x, "lamp_mopa", False)) for x in lst),
+                "updated_at_iso": max((getattr(x, "updated_at_iso", "") or "" for x in lst), default=""),
             })
 
         mode = self._sort_mode
@@ -1091,6 +1516,10 @@ class LibraryModel(QObject):
         elif mode == 1: merged_items.sort(key=lambda it: it.get("release_date", ""), reverse=True)
         elif mode == 2: merged_items.sort(key=lambda it: it.get("release_date", ""))
         elif mode == 3: merged_items.sort(key=lambda it: int(it.get("scene_count") or 0), reverse=True)
+        elif mode == 4: merged_items.sort(key=lambda it: it.get("updated_at_iso", ""), reverse=True)
+        elif mode == 5: merged_items.sort(key=lambda it: it.get("actors_ko", "") or "\uffff")
+        elif mode == 6: merged_items.sort(key=lambda it: (0 if (it.get("has_ko_srt") or it.get("has_ja_srt") or it.get("lamp_hardcoded")) else 1, it.get("product_code", "")))
+        elif mode == 7: merged_items.sort(key=lambda it: (0 if it.get("lamp_mopa") else 1, it.get("product_code", "")))
 
         self._works.refresh(merged_items)
         self.workCountChanged.emit()

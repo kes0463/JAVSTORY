@@ -400,6 +400,48 @@ Item {
                     Row {
                         spacing: Theme.spacingSm
                         Text {
+                            text: "Harvest 동시 실행"
+                            font.pixelSize: Theme.fontBody
+                            color: Theme.textSecondary
+                            width: 160
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+
+                        ComboBox {
+                            id: harvestConcCombo
+                            model: ["1", "2", "3", "4", "5"]
+                            width: 120
+                            currentIndex: Math.max(0, Math.min(4, (SettingsModel.harvestConcurrency || 2) - 1))
+                            onCurrentIndexChanged: {
+                                var vals = [1,2,3,4,5];
+                                SettingsModel.harvestConcurrency = vals[currentIndex] || 2;
+                            }
+                            background: Rectangle {
+                                radius: Theme.radiusSm
+                                color: Theme.surfaceLight
+                                border.color: Theme.glassBorder
+                                border.width: 1
+                            }
+                            contentItem: Text {
+                                text: harvestConcCombo.displayText
+                                font.pixelSize: Theme.fontCaption
+                                color: Theme.textPrimary
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: Theme.spacingSm
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "권장 2~3, 고성능 환경은 5 (OpenRouter 요청/DB 부하 증가)"
+                        font.pixelSize: Theme.fontCaption
+                        color: Theme.textMuted
+                        leftPadding: 168
+                    }
+
+                    Row {
+                        spacing: Theme.spacingSm
+                        Text {
                             text: "Grok 스토리 맥락"
                             font.pixelSize: Theme.fontBody
                             color: Theme.textSecondary

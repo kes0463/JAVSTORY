@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal as pyqtSignal
 from pathlib import Path
 import time
 import os

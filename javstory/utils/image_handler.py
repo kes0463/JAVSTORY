@@ -4,7 +4,7 @@ from pathlib import Path
 import urllib.request
 import urllib.error
 import ssl
-from javstory.config.app_config import MEDIA_ROOT, WESERV_IMAGE_PROXY
+from javstory.config.app_config import E_MEDIA_ROOT, MEDIA_ROOT, WESERV_IMAGE_PROXY
 from javstory.utils.common import log_ts
 
 class ImageHandler:
@@ -21,7 +21,13 @@ class ImageHandler:
         self.ssl_context = ssl._create_unverified_context()
 
     def get_product_dir(self, product_code: str) -> Path:
-        p_dir = MEDIA_ROOT / product_code
+        base = Path(E_MEDIA_ROOT)
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            base = Path(MEDIA_ROOT)
+
+        p_dir = base / product_code
         p_dir.mkdir(parents=True, exist_ok=True)
         return p_dir
 

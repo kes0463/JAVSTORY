@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, create_engine
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from contextlib import contextmanager
@@ -13,6 +13,11 @@ if str(_ROOT) not in sys.path:
 from javstory.config.app_config import DB_PATH as _CFG_DB_PATH
 
 Base = declarative_base()
+
+# DB 스키마/마이그레이션 가드 버전.
+# - SQLite `PRAGMA user_version`에 저장한다.
+# - 테이블/컬럼 마이그레이션 로직을 변경하면 이 값을 올려서 1회 재실행되게 한다.
+_APP_DB_SCHEMA_VERSION = 2
 
 class JAVMetadata(Base):
     """
@@ -67,6 +72,7 @@ class JAVMetadata(Base):
     release_date = Column(String(100), nullable=True)
     analysis_status = Column(Text, nullable=True)
     is_hardcoded = Column(Boolean, default=False)
+    is_mopa = Column(Boolean, default=False)
     folder_path = Column(String(1000), nullable=True)
     
     created_at = Column(DateTime, default=datetime.datetime.now)
@@ -129,6 +135,32 @@ DB_PATH = str(_DB)
 engine = create_engine(f"sqlite:///{_DB.as_posix()}")
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# SQLite 동시성 튜닝:
+# - WAL: read/write 동시성 개선
+# - timeout: write lock 대기(기본 5s는 동시 Harvest에서 부족할 수 있음)
+# - check_same_thread: 다중 스레드(Worker) 사용 시 안정성
+try:
+    engine.dispose()
+except Exception:
+    pass
+engine = create_engine(
+    f"sqlite:///{_DB.as_posix()}",
+    connect_args={"check_same_thread": False, "timeout": 30},
+)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_on_connect(dbapi_connection, connection_record):  # type: ignore[no-redef]
+    try:
+        cur = dbapi_connection.cursor()
+        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA temp_store=MEMORY;")
+        cur.close()
+    except Exception:
+        pass
+
 def get_db_session():
     return SessionLocal()
 
@@ -155,11 +187,36 @@ def get_db_session_ctx():
 def init_db():
     """테이블 생성 및 기존 DB 컬럼 자동 마이그레이션"""
     _DB.parent.mkdir(parents=True, exist_ok=True)
+    import sqlite3
+
     print(f"[DB] Using database at: {DB_PATH}")
+
+    # 이미 마이그레이션이 적용된 DB면 앱 시작 시점에서 불필요한 PRAGMA/ALTER를 피한다.
+    try:
+        if Path(DB_PATH).is_file() and Path(DB_PATH).stat().st_size > 0:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute("PRAGMA user_version;")
+                row = cur.fetchone()
+                user_ver = int(row[0] if row and row[0] is not None else 0)
+                cur.close()
+            if user_ver >= _APP_DB_SCHEMA_VERSION:
+                return
+    except Exception:
+        # 가드 확인 실패 시에는 안전하게 초기화 경로로 진행
+        pass
+
     print("[DB] Initializing tables (create_all)...")
     Base.metadata.create_all(bind=engine)
     print("[DB] Running migration checks...")
     _migrate_add_needs_review_columns()
+    _ensure_indexes_and_optimize()
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(f"PRAGMA user_version={_APP_DB_SCHEMA_VERSION};")
+            conn.commit()
+    except Exception:
+        pass
     print("[DB] Database initialization complete.")
 
 def _migrate_add_needs_review_columns():
@@ -179,6 +236,12 @@ def _migrate_add_needs_review_columns():
             if "is_hardcoded" not in cols_meta:
                 cursor.execute("ALTER TABLE jav_metadata ADD COLUMN is_hardcoded INTEGER DEFAULT 0")
                 print("[DB Migration] jav_metadata.is_hardcoded 컬럼 추가 완료")
+
+            # jav_metadata.is_mopa 컬럼 추가
+            cols_meta = [row[1] for row in cursor.execute("PRAGMA table_info(jav_metadata)")]
+            if "is_mopa" not in cols_meta:
+                cursor.execute("ALTER TABLE jav_metadata ADD COLUMN is_mopa INTEGER DEFAULT 0")
+                print("[DB Migration] jav_metadata.is_mopa 컬럼 추가 완료")
                 
             # jav_metadata.folder_path 컬럼 추가
             if "folder_path" not in cols_meta:
@@ -193,6 +256,42 @@ def _migrate_add_needs_review_columns():
             conn.commit()
     except Exception as e:
         print(f"[DB Migration] 마이그레이션 실패: {e}")
+
+
+def _ensure_indexes_and_optimize() -> None:
+    """
+    조회 핫패스용 인덱스/옵션을 보장한다.
+    - 이미 있으면 NO-OP (IF NOT EXISTS)
+    - SQLite는 가벼운 인덱스 추가만으로도 목록/대기큐/정렬 성능이 크게 개선된다.
+    """
+    import sqlite3
+
+    stmts = [
+        # 라이브러리 목록 정렬(최신 갱신순)
+        "CREATE INDEX IF NOT EXISTS idx_jav_metadata_updated_at ON jav_metadata(updated_at);",
+        # 대시보드 pending 큐
+        "CREATE INDEX IF NOT EXISTS idx_jav_metadata_analysis_status ON jav_metadata(analysis_status);",
+        # 날짜 정렬
+        "CREATE INDEX IF NOT EXISTS idx_jav_metadata_release_date ON jav_metadata(release_date);",
+        # 폴더 바인딩 조회/필터
+        "CREATE INDEX IF NOT EXISTS idx_jav_metadata_folder_path ON jav_metadata(folder_path);",
+    ]
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            for s in stmts:
+                try:
+                    cur.execute(s)
+                except Exception:
+                    pass
+            try:
+                cur.execute("PRAGMA optimize;")
+            except Exception:
+                pass
+            cur.close()
+            conn.commit()
+    except Exception:
+        return
 
 def upsert_jav_metadata(session, product_code, merge_empty_only=False, **kwargs):
     """기록이 있으면 업데이트, 없으면 삽입"""

@@ -19,6 +19,33 @@ Item {
     }
 
     property bool detailVisible: false
+    property bool selectMode: false
+    property var selectedSkus: []
+
+    function _isSelected(pc) {
+        for (var i = 0; i < selectedSkus.length; i++) {
+            if (selectedSkus[i] === pc)
+                return true
+        }
+        return false
+    }
+
+    function _toggleSelected(pc, on) {
+        var out = []
+        var exists = false
+        for (var i = 0; i < selectedSkus.length; i++) {
+            var v = selectedSkus[i]
+            if (v === pc) {
+                exists = true
+                if (on !== true)
+                    continue
+            }
+            out.push(v)
+        }
+        if (!exists && on === true)
+            out.push(pc)
+        selectedSkus = out
+    }
 
     onDetailVisibleChanged: {
         if (!detailVisible) {
@@ -182,11 +209,18 @@ Item {
     /// 상세 화면에서 포커스가 스크롤/버튼 등에 있어도 목록으로 복귀 (루트 Keys는 포커스가 없으면 받지 못함)
     Shortcut {
         sequences: [StandardKey.Cancel]
-        enabled: root.detailVisible && detailLoader.item
+        enabled: (root.detailVisible && detailLoader.item
             && !detailLoader.item.lightboxVisible
             && !detailLoader.item.folderPickerOpen
-            && !manualFolderPicker.visible
-        onActivated: root.detailVisible = false
+            && !manualFolderPicker.visible) || root.selectMode
+        onActivated: {
+            if (root.selectMode) {
+                root.selectMode = false
+                root.selectedSkus = []
+            } else {
+                root.detailVisible = false
+            }
+        }
     }
 
     Shortcut {
@@ -254,10 +288,18 @@ Item {
                         font.weight: Font.ExtraBold
                         color: Theme.textPrimary
                     }
-                    Text {
-                        text: LibraryModel.workCount + "건"
-                        font.pixelSize: Theme.fontBody
-                        color: Theme.textSecondary
+                    Row {
+                        spacing: 8
+                        Text {
+                            text: LibraryModel.workCount + "건"
+                            font.pixelSize: Theme.fontBody
+                            color: Theme.textSecondary
+                        }
+                        BusyIndicator {
+                            visible: LibraryModel.isLoading
+                            width: 16; height: 16
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
                     }
                 }
 
@@ -289,6 +331,7 @@ Item {
             }
 
             Row {
+                id: toolbarRow
                 spacing: Theme.spacingSm
                 width: parent.width
 
@@ -473,9 +516,9 @@ Item {
                 ComboBox {
                     id: sortCombo
                     height: root.libToolbarH
-                    width: 170
+                    width: 190
                     focusPolicy: Qt.StrongFocus
-                    model: ["품번순", "날짜순 (최신)", "날짜순 (오래된)", "씬 수 (많은)"]
+                    model: ["품번순", "날짜순 (최신)", "날짜순 (오래된)", "씬 수 (많은)", "최근 갱신순", "배우순 (ㄱ~ㅎ)", "자막 있음 우선", "모파 우선"]
                     currentIndex: LibraryModel.sortMode
                     onCurrentIndexChanged: LibraryModel.sortMode = currentIndex
 
@@ -573,6 +616,7 @@ Item {
                             event.accepted = true
                             return
                         }
+                        // PgDn
                         if (event.key === Qt.Key_PageDown) {
                             applyGridPage(1)
                             event.accepted = true
@@ -588,8 +632,13 @@ Item {
                         // Enter / Space → 상세
                         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
                             var pc = grid.currentItem ? grid.currentItem.productCode : ""
-                            if (pc !== "")
-                                LibraryModel.loadDetail(pc)
+                            if (pc !== "") {
+                                if (root.selectMode) {
+                                    root._toggleSelected(pc, !root._isSelected(pc))
+                                } else {
+                                    LibraryModel.loadDetail(pc)
+                                }
+                            }
                             event.accepted = true
                             return
                         }
@@ -606,9 +655,11 @@ Item {
                     GridView {
                         id: grid
                         anchors.fill: parent
-                        cellWidth: 216
-                        cellHeight: 316
+                        cellWidth: Math.floor(width / Math.max(1, Math.floor(width / 210)))
+                        cellHeight: Math.floor(cellWidth * 1.48)
                         clip: true
+                        // 이미지 그리드에서 cacheBuffer가 과하면 메모리/디코딩 부담이 커질 수 있음
+                        cacheBuffer: 320
                         model: LibraryModel.works
                         boundsBehavior: Theme.boundsBehavior
                         flickDeceleration: Theme.flickDeceleration
@@ -627,20 +678,41 @@ Item {
                         }
 
                         delegate: PosterCard {
+                            width: grid.cellWidth
+                            height: grid.cellHeight
                             productCode: model.productCode
                             titleKo: model.titleKo
                             actorsKo: model.actorsKo
                             sceneCount: model.sceneCount
                             coverPath: model.coverPath
+                            previewPath: model.previewPath
                             pipelineStage: model.pipelineStage
                             hasCanonical: model.hasCanonical
                             partCount: model.partCount
                             hasJaSrt: model.hasJaSrt
                             hasKoSrt: model.hasKoSrt
                             lampHardcoded: model.lampHardcoded
+                            lampMopa: model.lampMopa
+                            selectionMode: root.selectMode
+                            selected: root._isSelected(model.productCode)
 
                             onClicked: function(sku) {
-                                LibraryModel.loadDetail(sku);
+                                if (root.selectMode) {
+                                    root._toggleSelected(sku, !root._isSelected(sku))
+                                } else {
+                                    LibraryModel.loadDetail(sku);
+                                }
+                            }
+
+                            onPressAndHold: function(sku) {
+                                if (!root.selectMode) {
+                                    root.selectMode = true
+                                    root._toggleSelected(sku, true)
+                                }
+                            }
+
+                            onSelectionToggled: function(sku, sel) {
+                                root._toggleSelected(sku, sel)
                             }
                         }
                     }
@@ -649,6 +721,11 @@ Item {
                         target: grid
                         function onContentYChanged() {
                             markViewportDirtyFromUserScroll()
+                            // 스크롤이 바닥 근처면 추가 로드(페이지네이션)
+                            if (grid.contentY + grid.height >= grid.contentHeight - 800) {
+                                if (LibraryModel.canLoadMore)
+                                    LibraryModel.loadMore()
+                            }
                         }
                         function onContentXChanged() {
                             markViewportDirtyFromUserScroll()
@@ -666,6 +743,98 @@ Item {
                 }
             }
         }
+
+        // ── 선택 모드 하단 플로팅 액션바 ──────────────────
+        Item {
+            id: selectionPanelContainer
+            anchors.bottom: parent.bottom
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Math.min(600, parent.width - 40)
+            height: 72
+            z: 1000
+            
+            visible: opacity > 0
+            opacity: root.selectMode ? 1 : 0
+            
+            states: [
+                State {
+                    name: "visible"; when: root.selectMode
+                    PropertyChanges { target: selectionPanelContainer; anchors.bottomMargin: 24; opacity: 1 }
+                },
+                State {
+                    name: "hidden"; when: !root.selectMode
+                    PropertyChanges { target: selectionPanelContainer; anchors.bottomMargin: -height; opacity: 0 }
+                }
+            ]
+            
+            transitions: Transition {
+                NumberAnimation { properties: "anchors.bottomMargin, opacity"; duration: 400; easing.type: Easing.OutBack }
+            }
+
+            GlassCard {
+                anchors.fill: parent
+                radius: 36
+                border.width: 2
+                border.color: Theme.accentNeon
+                
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 24
+                    anchors.rightMargin: 12
+                    spacing: 16
+
+                    Column {
+                        Layout.alignment: Qt.AlignVCenter
+                        Text {
+                            text: root.selectedSkus.length + "개 선택됨"
+                            font.pixelSize: Theme.fontSubtitle
+                            font.weight: Font.Bold
+                            color: Theme.textPrimary
+                        }
+                        Text {
+                            text: "다중 작업 수행 가능"
+                            font.pixelSize: Theme.fontCaption
+                            color: Theme.textSecondary
+                        }
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    ActionButton {
+                        text: "몽타주 생성"
+                        primary: true
+                        neonGlow: true
+                        enabled: root.selectedSkus.length >= 2
+                        onClicked: {
+                            MontageQueue.enqueue(root.selectedSkus)
+                            root.selectMode = false
+                            root.selectedSkus = []
+                        }
+                    }
+
+                    ActionButton {
+                        text: "재크롤링"
+                        primary: false
+                        neonGlow: true
+                        enabled: root.selectedSkus.length >= 1
+                        onClicked: {
+                            HarvestModel.recrawlProducts(root.selectedSkus, true)
+                            root.selectMode = false
+                            root.selectedSkus = []
+                        }
+                    }
+
+                    ActionButton {
+                        text: "취소"
+                        primary: false
+                        onClicked: {
+                            root.selectMode = false
+                            root.selectedSkus = []
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ── 상세 뷰 오버레이 ────────────────────────────
@@ -673,6 +842,7 @@ Item {
         id: detailLoader
         anchors.fill: parent
         active: root.detailVisible
+        z: 2000
         sourceComponent: Component {
             LibraryDetail {
                 onBack: root.detailVisible = false

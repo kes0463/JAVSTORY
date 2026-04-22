@@ -89,6 +89,7 @@ async def run_story_grok_after_harvest_async(
 
     tier = merge_story_context_tier(story_context_tier)
     model_name = tier.get("model", "")
+    provider = str(tier.get("provider") or "openrouter").strip().lower()
     path = story_context_cache_path(pc, str(model_name))
 
     if path.is_file() and not force_refresh:
@@ -104,12 +105,12 @@ async def run_story_grok_after_harvest_async(
 
     router: MultiTierRouter | None = None
     try:
-        router = MultiTierRouter(api_key=api_key, logger_func=log)
         messages = [
             {"role": "system", "content": SYSTEM_STORY_CONTEXT_GROK},
             {"role": "user", "content": render_story_context_user_message(product_code=pc)},
         ]
 
+        router = MultiTierRouter(api_key=api_key, logger_func=log)
         # Grok 모델은 웹 검색 성능을 위해 json_mode 없이 자연어 응답에서 추출 선호할 수 있으나,
         # 프롬프트에서 이미 JSON만 요청하므로 route() 호출.
         # :online 모델의 경우 가끔 JSON 모드가 안 될 수 있으므로 일반 호출 후 파싱.

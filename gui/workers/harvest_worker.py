@@ -44,7 +44,7 @@ class HarvestWorker(QThread):
 
     def __init__(
         self,
-        entries: list[tuple[str, bool, str | None]],
+        entries: list[tuple],
         grok_enabled: bool = True,
         parent=None,
     ):
@@ -76,9 +76,21 @@ class HarvestWorker(QThread):
         asyncio.set_event_loop(loop)
         
         try:
-            for target, is_path_flag, pc_override in self.entries:
+            for e in self.entries:
                 if not self._is_running:
                     break
+
+                # entry: (target, is_path, product_code_override, force_rebuild?)
+                try:
+                    target = e[0]
+                    is_path_flag = bool(e[1])
+                    pc_override = e[2] if len(e) >= 3 else None
+                    force_rebuild = bool(e[3]) if len(e) >= 4 else False
+                except Exception:
+                    target = e
+                    is_path_flag = False
+                    pc_override = None
+                    force_rebuild = False
 
                 pc_kw = (pc_override or "").strip() or None
                 if is_path_flag:
@@ -93,7 +105,15 @@ class HarvestWorker(QThread):
 
                 log(f"[HarvestWorker] [{sku}] 수집 공정 진입 (Target: {target})")
 
-                loop.run_until_complete(self._process_item(sku, target, log, product_code=pc_kw))
+                loop.run_until_complete(
+                    self._process_item(
+                        sku,
+                        str(target),
+                        log,
+                        product_code=pc_kw,
+                        force_rebuild=force_rebuild,
+                    )
+                )
                 self.msleep(300) # UI 응답성 보호
         finally:
             # [개선] 루프 종료 전 대기 중인 모든 태스크를 정리하여 'Event loop is closed' 방지
@@ -121,19 +141,31 @@ class HarvestWorker(QThread):
                 first_t = self.entries[0][0] if self.entries else "Unknown"
                 print(f"[{now_end}] [HarvestWorker] '{first_t}' 스레드 루프 종료 및 리소스 해제 완료.", flush=True)
 
-    async def _process_item(self, sku: str, item: str, log, *, product_code: str | None = None):
+    async def _process_item(
+        self,
+        sku: str,
+        item: str,
+        log,
+        *,
+        product_code: str | None = None,
+        force_rebuild: bool = False,
+    ):
         """개별 아이템에 대한 전체 수집/번역/저장 프로세스 (Async)"""
         log(f"[HarvestWorker] '{sku}' 통합 공정 시작...")
         self.progress.emit(sku, "준비 중...", 5)
         
         # 1. 통합 코디네이터 호출 (Crawling + Mapping + AI Translation + DB Save)
-        self.progress.emit(sku, "크롤링·다국어 번역·DB 저장·스토리 맥락(Grok JSON, 캐시)…", 20)
+        if self.grok_enabled:
+            self.progress.emit(sku, "크롤링·다국어 번역·DB 저장·스토리 맥락(Grok JSON, 캐시)…", 20)
+        else:
+            self.progress.emit(sku, "크롤링·다국어 번역·DB 저장…", 20)
         
         try:
             crawler_res = await run_crawler_for_video_path(
                 item, 
                 product_code=product_code,
-                enable_story_context=self.grok_enabled
+                enable_story_context=self.grok_enabled,
+                force_rebuild_story_context=bool(force_rebuild),
             )
             
             if crawler_res.get("error"):
@@ -149,19 +181,33 @@ class HarvestWorker(QThread):
                 from javstory.harvest.database import JAVMetadata
                 with get_db_session_ctx() as session:
                     row = session.query(JAVMetadata).filter_by(product_code=sku).first()
-                    if row and row.cover_image_url:
-                        log(f"[HarvestWorker] [{sku}] 이미지 자산 처리 시작 (URL: {row.cover_image_url})")
-                        from javstory.utils.image_handler import ImageHandler
-                        handler = ImageHandler()
-                        img_res = handler.process_jav_assets(sku, row.cover_image_url)
-                        
-                        if img_res:
-                            row.cover_image_local_path = img_res.get("poster_local")
-                            row.thumb_image_local_path = img_res.get("thumb_local")
-                            session.commit()
-                            log(f"[HarvestWorker] [{sku}] 이미지 자산 처리 완료.")
-                        else:
-                            log(f"⚠️ [HarvestWorker] [{sku}] 이미지 수집 실패 (데이터는 보존됨).")
+                    if not row:
+                        pass
+                    else:
+                        # cover가 이미 있으면 여기서 굳이 재처리하지 않는다(중복 I/O 방지)
+                        has_local = False
+                        try:
+                            has_local = bool(getattr(row, "cover_image_local_path", None))
+                        except Exception:
+                            has_local = False
+
+                        url = (getattr(row, "cover_image_url", None) or "").strip()
+                        is_http = url.startswith("http://") or url.startswith("https://")
+
+                        if (not has_local) and is_http:
+                            log(f"[HarvestWorker] [{sku}] 이미지 자산 처리 시작 (URL: {url})")
+                            from javstory.utils.image_handler import ImageHandler
+
+                            handler = ImageHandler()
+                            img_res = handler.process_jav_assets(sku, url)
+
+                            if img_res:
+                                row.cover_image_local_path = img_res.get("poster_local")
+                                row.thumb_image_local_path = img_res.get("thumb_local")
+                                session.commit()
+                                log(f"[HarvestWorker] [{sku}] 이미지 자산 처리 완료.")
+                            else:
+                                log(f"⚠️ [HarvestWorker] [{sku}] 이미지 수집 실패 (데이터는 보존됨).")
             except Exception as img_e:
                 log(f"⚠️ [HarvestWorker] [{sku}] 이미지 처리 오류: {str(img_e)}")
 

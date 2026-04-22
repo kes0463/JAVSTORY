@@ -25,6 +25,10 @@ def create_engine(app) -> QQmlApplicationEngine:
     from gui.models.harvest_model import HarvestModel
     from gui.models.processing_model import ProcessingModel
     from gui.models.library_model import LibraryModel
+    from gui.models.highlight_queue_model import HighlightQueueController
+    from gui.models.preview_queue_model import PreviewQueueController
+    from gui.models.montage_queue_model import MontageQueueController
+    from gui.models.mosaic_queue_model import MosaicQueueController
     from gui.models.settings_model import SettingsModel
     from gui.models.folder_explorer_model import FolderExplorerModel
     from gui.folder_binding_inbox_store import FolderBindingInboxStore
@@ -39,6 +43,14 @@ def create_engine(app) -> QQmlApplicationEngine:
     processing = ProcessingModel(parent=app)
     print("[UI] Initializing LibraryModel...")
     library = LibraryModel(parent=app)
+    print("[UI] Initializing HighlightQueueController...")
+    highlight_queue = HighlightQueueController(parent=app)
+    print("[UI] Initializing PreviewQueueController...")
+    preview_queue = PreviewQueueController(parent=app)
+    print("[UI] Initializing MontageQueueController...")
+    montage_queue = MontageQueueController(parent=app)
+    print("[UI] Initializing MosaicQueueController...")
+    mosaic_queue = MosaicQueueController(parent=app)
     print("[UI] Initializing SettingsModel...")
     settings = SettingsModel(parent=app)
     print("[UI] Initializing FolderExplorerModel...")
@@ -50,15 +62,57 @@ def create_engine(app) -> QQmlApplicationEngine:
     ctx.setContextProperty("HarvestModel", harvest)
     ctx.setContextProperty("ProcessingModel", processing)
     ctx.setContextProperty("LibraryModel", library)
+    ctx.setContextProperty("HighlightQueue", highlight_queue)
+    ctx.setContextProperty("PreviewQueue", preview_queue)
+    ctx.setContextProperty("MontageQueue", montage_queue)
+    ctx.setContextProperty("MosaicQueue", mosaic_queue)
     ctx.setContextProperty("SettingsModel", settings)
     ctx.setContextProperty("FolderExplorerModel", folder_explorer)
     ctx.setContextProperty("FolderBindingInboxStore", folder_binding_inbox_store)
+
+    # Settings ↔ Harvest 옵션 동기화 (특히 Grok 스토리 맥락)
+    try:
+        harvest.grokEnabled = bool(settings.grokEnabled)
+        # 설정 → 수집
+        settings.grokEnabledChanged.connect(
+            lambda: setattr(harvest, "grokEnabled", bool(settings.grokEnabled))
+        )
+        # 수집 → 설정 (양방향)
+        harvest.grokEnabledChanged.connect(
+            lambda: setattr(settings, "grokEnabled", bool(harvest.grokEnabled))
+        )
+    except Exception:
+        pass
 
     from gui.folder_watch_service import FolderMoveWatchService
 
     _folder_watch = FolderMoveWatchService(library, parent=app)
     library.summariesReloaded.connect(_folder_watch.refresh_paths_from_db)
     QTimer.singleShot(2500, _folder_watch.refresh_paths_from_db)
+
+    # 하이라이트 큐 로그를 실행 터미널에 출력
+    try:
+        highlight_queue.logMessage.connect(lambda msg: print(msg))
+    except Exception:
+        pass
+
+    # 프리뷰 큐 로그를 실행 터미널에 출력
+    try:
+        preview_queue.logMessage.connect(lambda msg: print(msg))
+    except Exception:
+        pass
+
+    # 몽타주 큐 로그를 실행 터미널에 출력
+    try:
+        montage_queue.logMessage.connect(lambda msg: print(msg))
+    except Exception:
+        pass
+
+    # 모자이크 제거 큐 로그를 실행 터미널에 출력
+    try:
+        mosaic_queue.logMessage.connect(lambda msg: print(msg))
+    except Exception:
+        pass
 
     print(f"[UI] Loading QML from: {_QML_DIR / 'main.qml'}")
     engine.load(QUrl.fromLocalFile(str(_QML_DIR / "main.qml")))

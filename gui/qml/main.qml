@@ -8,7 +8,7 @@ ApplicationWindow {
     visible: true
     /** 수집 탭 도구줄(SearchBar·버튼 줄)이 사이드바(260)+여백까지 포함해 한 줄로 보이도록 여유 너비 */
     width: 1540
-    height: 820
+    height: 980
     minimumWidth: 1340
     minimumHeight: 600
     title: "JAVSTORY Pro"
@@ -164,6 +164,26 @@ ApplicationWindow {
     // 전역 토스트 헬퍼 (Python 모델에서 호출)
     function showToast(msg, level) {
         toast.show(msg, level || "info");
+    }
+
+    Connections {
+        target: HighlightQueue
+        function onToastMessage(msg, level) { window.showToast(msg, level); }
+    }
+
+    Connections {
+        target: PreviewQueue
+        function onToastMessage(msg, level) { window.showToast(msg, level); }
+    }
+
+    Connections {
+        target: MontageQueue
+        function onToastMessage(msg, level) { window.showToast(msg, level); }
+    }
+    
+    Connections {
+        target: MosaicQueue
+        function onToastMessage(msg, level) { window.showToast(msg, level); }
     }
 
     RowLayout {

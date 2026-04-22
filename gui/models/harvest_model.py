@@ -76,6 +76,7 @@ class HarvestModel(QObject):
     grokEnabledChanged = Signal()
     taskCountChanged = Signal()
     queuedCountChanged = Signal()
+    finishedCountChanged = Signal()
     logMessage = Signal(str)
     toastMessage = Signal(str, str)  # message, level
 
@@ -87,11 +88,13 @@ class HarvestModel(QObject):
         self._tasks = HarvestTaskListModel(self)
         self._workers: dict[str, object] = {}
         self._active_refs: list[object] = []
+        # 전역 Harvest 실행 큐(품번 단일 추가까지 포함)
+        self._global_queue: deque = deque()
         # 배치(폴더/상위폴더) 병렬 실행용 큐/상태
         self._batch_queues: dict[str, deque] = {}
         self._batch_active_counts: dict[str, int] = {}
         # 폴더 수집 큐(사용자 시작 트리거)
-        self._queued_entries: list[tuple[str, bool, str | None]] = []
+        self._queued_entries: list[tuple] = []
 
     @Property(QObject, constant=True)
     def tasks(self):
@@ -112,6 +115,13 @@ class HarvestModel(QObject):
     def queuedCount(self) -> int:
         return len(self._queued_entries)
 
+    @Property(int, notify=finishedCountChanged)
+    def finishedCount(self) -> int:
+        return sum(
+            1 for it in self._tasks._items
+            if it.get("status") in ("done", "error")
+        )
+
     # ── Slots (QML에서 호출) ──────────────────────────
 
     @Slot(str)
@@ -119,8 +129,33 @@ class HarvestModel(QObject):
         """품번(쉼표·공백 구분) 추가."""
         skus = re.split(r"[,\s;\n]+", query)
         clean = list(dict.fromkeys(s.strip().upper() for s in skus if s.strip()))
-        for sku in clean:
-            self._launch_single(sku, is_path=False)
+        entries = [(sku, False, None, False) for sku in clean if sku]
+        if not entries:
+            return
+        self._enqueue_global(entries)
+        self._pump_global()
+
+    @Slot("QStringList", bool)
+    def recrawlProducts(self, product_codes: list[str], force: bool = True) -> None:
+        """
+        라이브러리 등에서 선택한 품번들을 재크롤링(강제)한다.
+        - product_codes: ["STAR-471", ...]
+        - force=True면 DB가 완비되어도 다시 웹 수집/번역을 수행하도록 워커에 전달
+        """
+        pcs = []
+        try:
+            for pc in (product_codes or []):
+                s = str(pc or "").strip().upper()
+                if s:
+                    pcs.append(s)
+        except Exception:
+            pcs = []
+        if not pcs:
+            return
+        entries = [(pc, False, None, bool(force)) for pc in pcs]
+        self._enqueue_global(entries)
+        self._pump_global()
+        self.toastMessage.emit(f"[재크롤링] {len(entries)}건 큐에 추가됨", "success")
 
     @Slot(str)
     def addFolder(self, path: str):
@@ -133,8 +168,8 @@ class HarvestModel(QObject):
             self.toastMessage.emit("실행할 작업이 없습니다.", "warning")
             return
         entries = planned_to_worker_entries(jobs)
-        key = jobs[0].product_code if len(jobs) == 1 else f"BATCH_{time.time_ns()}"
-        self._launch_worker(key, entries)
+        self._enqueue_global(entries)
+        self._pump_global()
         self.toastMessage.emit(f"{len(jobs)}건 수집 시작", "success")
 
     @Slot(str)
@@ -148,8 +183,8 @@ class HarvestModel(QObject):
             self.toastMessage.emit("실행할 작업이 없습니다.", "warning")
             return
         entries = planned_to_worker_entries(jobs)
-        key = f"PARENT_{time.time_ns()}"
-        self._launch_worker(key, entries)
+        self._enqueue_global(entries)
+        self._pump_global()
         self.toastMessage.emit(f"{len(jobs)}건 하위 폴더 수집 시작", "success")
 
     @Slot(str)
@@ -237,8 +272,8 @@ class HarvestModel(QObject):
         entries = list(self._queued_entries)
         self._queued_entries = []
         self.queuedCountChanged.emit()
-        key = f"QUEUE_{time.time_ns()}"
-        self._launch_worker(key, entries)
+        self._enqueue_global(entries)
+        self._pump_global()
         self.toastMessage.emit(f"{len(entries)}건 수집 시작 (큐)", "success")
 
     @Slot(str)
@@ -247,16 +282,38 @@ class HarvestModel(QObject):
             w = self._workers.pop(sku)
             w.stop()
         self._tasks.remove(sku)
+        # 전역 실행 큐에서도 제거
+        self._remove_from_global_queue(sku)
         # 배치 큐에 남아있는 항목도 제거
         self._remove_from_batch_queues(sku)
         # 실행 전 큐에서도 제거
         self._remove_from_queued_entries(sku)
+        self.finishedCountChanged.emit()
+
+    @Slot()
+    def removeFinished(self):
+        """완료(done) 또는 실패(error) 상태의 모든 태스크를 제거."""
+        finished = [
+            it["sku"] for it in list(self._tasks._items)
+            if it.get("status") in ("done", "error")
+        ]
+        if not finished:
+            return
+        for sku in finished:
+            self._tasks.remove(sku)
+        self.finishedCountChanged.emit()
+        self.toastMessage.emit(f"{len(finished)}건 완료 항목 제거", "info")
 
     # ── 내부 ─────────────────────────────────────────
 
-    def _launch_single(self, sku: str, *, is_path: bool):
-        self._tasks.upsert(sku, "waiting", 0, "대기 중...")
-        self._launch_worker(sku, [(sku, is_path, None)])
+    def _enqueue_global(self, entries: list[tuple[str, bool, str | None]]) -> None:
+        """전역 큐에 엔트리를 적재하고 UI에 waiting 상태로 노출."""
+        for e in entries or []:
+            sku = self._entry_sku(e)
+            if sku:
+                self._tasks.upsert(sku, "waiting", 0, "대기 중...")
+            self._global_queue.append(e)
+        self.taskCountChanged.emit()
 
     def _launch_worker(self, key: str, entries):
         from gui.workers.harvest_worker import HarvestWorker
@@ -281,6 +338,24 @@ class HarvestModel(QObject):
         self._active_refs.append(worker)
         worker.start()
 
+    def _pump_global(self) -> None:
+        """전역 큐에서 동시 실행 수만큼 워커를 채운다."""
+        conc = self._harvest_concurrency()
+        # 현재 실행중인 워커 수 기준으로 빈 슬롯만큼만 시작
+        while len(self._workers) < conc and self._global_queue:
+            entry = self._global_queue.popleft()
+            if not entry:
+                continue
+            sku = self._entry_sku(entry)
+            if not sku:
+                continue
+            # 이미 실행 중이면 큐 뒤로 보내고 다음으로
+            if sku in self._workers:
+                self._global_queue.append(entry)
+                # 모든 항목이 실행중 sku로만 채워진 경우 무한루프 방지
+                break
+            self._launch_worker(sku, [entry])
+
     def _harvest_concurrency(self) -> int:
         raw = (os.environ.get("JAVSTORY_HARVEST_CONCURRENCY", "") or "").strip()
         if raw:
@@ -293,10 +368,22 @@ class HarvestModel(QObject):
         # 안정성: 1..5로 제한
         return max(1, min(5, n))
 
-    def _entry_sku(self, entry) -> str:
-        """(target,is_path,pc_override) → UI 키(sku) 추정. worker 내부와 100% 동일하진 않지만 키로만 사용."""
+    def _remove_from_global_queue(self, sku: str) -> None:
+        s = (sku or "").strip().upper()
+        if not s or not self._global_queue:
+            return
         try:
-            target, is_path_flag, pc_override = entry
+            items = [e for e in list(self._global_queue) if self._entry_sku(e) != s]
+            self._global_queue = deque(items)
+        except Exception:
+            pass
+
+    def _entry_sku(self, entry) -> str:
+        """(target,is_path,pc_override,...) → UI 키(sku) 추정."""
+        try:
+            target = entry[0]
+            is_path_flag = bool(entry[1])
+            pc_override = entry[2] if len(entry) >= 3 else None
         except Exception:
             return str(entry).strip().upper()
         pc = (pc_override or "").strip().upper()
@@ -386,6 +473,7 @@ class HarvestModel(QObject):
         status = "done" if success else "error"
         self._tasks.upsert(sku, status, 100 if success else 0, message)
         self.logMessage.emit(f"[{sku}] {'성공' if success else '실패'}: {message}")
+        self.finishedCountChanged.emit()
 
     def _on_thread_done(self, worker):
         if worker in self._active_refs:
@@ -401,13 +489,6 @@ class HarvestModel(QObject):
                     key = k
                     break
 
-        # 배치 워커면 다음 작업 시작
-        batch_key = getattr(worker, "_batch_key", None)
-        if batch_key:
-            try:
-                self._batch_active_counts[batch_key] = max(0, self._batch_active_counts.get(batch_key, 1) - 1)
-            except Exception:
-                pass
-            # 다음 항목 이어서 실행
-            self._maybe_start_next_in_batch(str(batch_key))
+        # 다음 작업 시작(전역 큐)
+        self._pump_global()
         worker.deleteLater()

@@ -22,8 +22,19 @@ ENV_FILE_PATH = PROJECT_ROOT / ".env"
 # 기존 파일이 있으면 수동 이동: Harvest/jav_database.db → data/db/,
 # Transcription/story_context_cache → data/cache/story_context,
 # Transcription/reference_cache → data/cache/reference, 루트 master_db.js → data/derived/
+# 프로젝트 내부 데이터(DB/캐시 등)
 DATA_ROOT = PROJECT_ROOT / "data"
 DB_PATH = DATA_ROOT / "db" / "jav_database.db"
+
+# 대용량 데이터(E:) 루트
+E_DATA_ROOT = Path("E:/App/JAVSTORY/data")
+
+# 작품별 산출물 루트
+# 요구사항: E:\App\JAVSTORY\data\<작품폴더명>\{product_id}\...
+E_WORKS_DIRNAME = "works"
+E_MEDIA_ROOT = E_DATA_ROOT / E_WORKS_DIRNAME
+
+# 레거시(프로젝트 내부) 미디어 루트 — 이행 기간 fallback 탐색용
 MEDIA_ROOT = DATA_ROOT / "media"
 DERIVED_DATA_DIR = DATA_ROOT / "derived"
 STORY_CONTEXT_CACHE_DIR = DATA_ROOT / "cache" / "story_context"
@@ -348,6 +359,12 @@ STORY_CONTEXT_MODEL = (
     os.environ.get("JAVSTORY_STORY_CONTEXT_MODEL", "grok-4-fast:online").strip()
     or "x-ai/grok-4.1-fast:online"
 )
+# 기본값을 OpenRouter 웹검색 모델로 고정 (x-ai/grok-4.1-fast:online)
+STORY_CONTEXT_MODEL = (
+    os.environ.get("JAVSTORY_STORY_CONTEXT_MODEL", "x-ai/grok-4.1-fast:online").strip()
+    or "x-ai/grok-4.1-fast:online"
+)
+
 STORY_CONTEXT_TEMPERATURE = float(os.environ.get("JAVSTORY_STORY_CONTEXT_TEMPERATURE", "0.3") or 0.3)
 STORY_CONTEXT_MAX_TOKENS = int(os.environ.get("JAVSTORY_STORY_CONTEXT_MAX_TOKENS", "8192") or 8192)
 

@@ -49,6 +49,23 @@ _PLACEHOLDER_TITLE_LOWER = frozenset(
     {"njavtv.com", "njavtv", "njav", "njav tv", "just a moment...", "attention required"}
 )
 
+# 에러 페이지(title) 시그니처 — 정상 메타로 저장되면 안 됨
+_ERROR_TITLE_PATTERNS = (
+    r"\b503\b",
+    r"service unavailable",
+    r"bad gateway",
+    r"gateway timeout",
+    r"temporarily unavailable",
+    r"too many requests",
+    r"access denied",
+    r"forbidden",
+    r"cloudflare",
+    r"just a moment",
+    r"attention required",
+    r"서비스\s*이용\s*불가",
+    r"일시적(으로)?\s*사용\s*불가",
+)
+
 def _tcp_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -98,6 +115,11 @@ def _title_looks_placeholder(title: str | None) -> bool:
     if len(s) < 4: return True
     if s in _PLACEHOLDER_TITLE_LOWER: return True
     if "njav" in s and ".com" in s and len(s) < 24: return True
+    try:
+        if any(re.search(pat, s, flags=re.IGNORECASE) for pat in _ERROR_TITLE_PATTERNS):
+            return True
+    except Exception:
+        pass
     return False
 
 def _norm_product_code(val: str | None) -> str:

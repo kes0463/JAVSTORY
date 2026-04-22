@@ -101,372 +101,355 @@ Item {
         }
     }
 
-    ScrollView {
-        id: scrollView
+    ColumnLayout {
+        id: mainLayout
         anchors.fill: parent
         anchors.margins: Theme.spacingLg
-        contentWidth: availableWidth
-        Component.onCompleted: {
-            var f = scrollView.contentItem
-            if (f) {
-                f.flickDeceleration = Theme.flickDeceleration
-                f.maximumFlickVelocity = Theme.maxVelocity
-                f.boundsBehavior = Theme.boundsBehavior
+        spacing: Theme.spacingLg
+
+        // ── 헤더 ────────────────────────────────────
+        Column {
+            Layout.fillWidth: true
+            spacing: 4
+            Text {
+                text: "전사 & 자막 (Processing)"
+                font.pixelSize: Theme.fontTitle
+                font.weight: Font.ExtraBold
+                color: Theme.textPrimary
+            }
+            Text {
+                text: ProcessingModel.currentFile || "영상을 선택하거나 큐를 사용하여 자막을 생성하세요."
+                font.pixelSize: Theme.fontBody
+                color: Theme.textSecondary
             }
         }
 
-        Column {
-            width: parent.width
-            spacing: Theme.spacingLg
+        // ── 전체 진행률 ─────────────────────────────
+        ProgressIndicator {
+            Layout.fillWidth: true
+            value: ProcessingModel.progressPercent / 100
+            barHeight: 6
+        }
 
-            // ── 헤더 ────────────────────────────────────
-            Column {
-                spacing: 4
+        // ── 파일 선택 + 멀티파트 ────────────────────
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: Theme.spacingMd
+
+            GlassCard {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 110
+
                 Text {
-                    text: "전사 & 자막 (Processing)"
-                    font.pixelSize: Theme.fontTitle
-                    font.weight: Font.ExtraBold
-                    color: Theme.textPrimary
-                }
-                Text {
-                    text: ProcessingModel.currentFile || "영상을 선택하거나 큐를 사용하여 자막을 생성하세요."
+                    id: videoLabel
+                    text: "영상 파일"
                     font.pixelSize: Theme.fontBody
+                    font.weight: Font.DemiBold
                     color: Theme.textSecondary
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.topMargin: Theme.spacingSm
+                    anchors.leftMargin: Theme.spacingMd
                 }
-            }
 
-            // ── 전체 진행률 ─────────────────────────────
-            ProgressIndicator {
-                width: parent.width
-                value: ProcessingModel.progressPercent / 100
-                barHeight: 6
-            }
+                RowLayout {
+                    anchors.top: videoLabel.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Theme.spacingMd
+                    anchors.topMargin: 0
+                    spacing: Theme.spacingSm
 
-            // ── 파일 선택 + 멀티파트 ────────────────────
-            RowLayout {
-                width: parent.width
-                spacing: Theme.spacingMd
-
-                GlassCard {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 110
-
-                    Text {
-                        id: videoLabel
-                        text: "영상 파일"
-                        font.pixelSize: Theme.fontBody
-                        font.weight: Font.DemiBold
-                        color: Theme.textSecondary
-                        anchors.top: parent.top
-                        anchors.left: parent.left
-                        anchors.topMargin: Theme.spacingSm
-                        anchors.leftMargin: Theme.spacingMd
+                    ActionButton {
+                        text: "파일 선택"
+                        primary: false
+                        enabled: !ProcessingModel.isRunning
+                        Layout.alignment: Qt.AlignVCenter
+                        onClicked: {
+                            var f = SettingsModel.browseFile();
+                            if (f) {
+                                root.selectedVideoPath = f;
+                                ProcessingModel.addFile(f);
+                            }
+                        }
                     }
 
-                    RowLayout {
-                        anchors.top: videoLabel.bottom
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        anchors.margins: Theme.spacingMd
-                        anchors.topMargin: 0
-                        spacing: Theme.spacingSm
+                    Text {
+                        text: root.selectedVideoPath ? root.selectedVideoPath.split("/").pop().split("\\").pop() : "선택 없음"
+                        font.pixelSize: Theme.fontCaption
+                        color: Theme.textMuted
+                        elide: Text.ElideMiddle
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignVCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
 
-                        ActionButton {
-                            text: "파일 선택"
-                            primary: false
-                            enabled: !ProcessingModel.isRunning
-                            Layout.alignment: Qt.AlignVCenter
-                            onClicked: {
-                                var f = SettingsModel.browseFile();
-                                if (f) {
-                                    root.selectedVideoPath = f;
-                                    ProcessingModel.addFile(f);
+            GlassCard {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 110
+
+                Text {
+                    id: multiLabel
+                    text: "멀티파트"
+                    font.pixelSize: Theme.fontBody
+                    font.weight: Font.DemiBold
+                    color: Theme.textSecondary
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.topMargin: Theme.spacingSm
+                    anchors.leftMargin: Theme.spacingMd
+                }
+
+                RowLayout {
+                    anchors.top: multiLabel.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: Theme.spacingMd
+                    anchors.topMargin: 0
+
+                    ActionButton {
+                        text: "멀티파트 SRT 합성..."
+                        primary: false
+                        enabled: !ProcessingModel.isRunning
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                }
+            }
+        }
+
+        // ── 전사 큐 ─────────────────────────────────
+        GlassCard {
+            id: queueCard
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 200
+            clip: true
+
+            Column {
+                anchors.fill: parent
+                anchors.margins: Theme.spacingMd
+                spacing: Theme.spacingSm
+
+                Text {
+                    id: queueTitle
+                    text: "전사 큐"
+                    font.pixelSize: Theme.fontSubtitle
+                    font.weight: Font.DemiBold
+                    color: Theme.textPrimary
+                }
+
+                ListView {
+                    id: queueView
+                    width: parent.width
+                    height: parent.height - queueTitle.height - Theme.spacingSm
+                    clip: true
+                    model: ProcessingModel.queue
+                    boundsBehavior: Theme.boundsBehavior
+                    flickDeceleration: Theme.flickDeceleration
+                    maximumFlickVelocity: Theme.maxVelocity
+                    spacing: 2
+
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AsNeeded
+                    }
+
+                    delegate: Item {
+                        id: delegateRoot
+                        width: queueView.width
+                        height: 48
+                        
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.margins: 2
+                            radius: Theme.radiusSm
+                            color: rowArea.containsMouse ? Theme.navHover : "transparent"
+                            visible: rowArea.containsMouse
+                        }
+
+                        CheckBox {
+                            id: cb
+                            checked: model.checked
+                            onToggled: ProcessingModel.toggleCheck(index, checked)
+                            anchors.left: parent.left
+                            anchors.leftMargin: Theme.spacingMd
+                            anchors.verticalCenter: parent.verticalCenter
+                            padding: 0
+                            
+                            indicator: Rectangle {
+                                implicitWidth: 20
+                                implicitHeight: 20
+                                radius: 4
+                                color: cb.checked ? Theme.accentNeon : "transparent"
+                                border.color: cb.checked ? Theme.accentNeon : Theme.textMuted
+                                border.width: 1.5
+
+                                Text {
+                                    text: "✓"
+                                    anchors.centerIn: parent
+                                    color: Theme.isDark ? "#0A0E1A" : "white"
+                                    font.pixelSize: 14
+                                    font.bold: true
+                                    visible: cb.checked
                                 }
                             }
                         }
 
                         Text {
-                            text: root.selectedVideoPath ? root.selectedVideoPath.split("/").pop().split("\\").pop() : "선택 없음"
-                            font.pixelSize: Theme.fontCaption
-                            color: Theme.textMuted
+                            id: fileNameText
+                            text: model.fileName
+                            font.pixelSize: Theme.fontBody - 1
+                            font.weight: Font.Medium
+                            color: Theme.textPrimary
                             elide: Text.ElideMiddle
-                            Layout.fillWidth: true
-                            Layout.alignment: Qt.AlignVCenter
+                            anchors.left: cb.right
+                            anchors.leftMargin: Theme.spacingMd
+                            anchors.right: badgeContainer.left
+                            anchors.rightMargin: Theme.spacingMd
+                            anchors.verticalCenter: parent.verticalCenter
                             verticalAlignment: Text.AlignVCenter
                         }
-                    }
-                }
 
-                GlassCard {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 110
-
-                    Text {
-                        id: multiLabel
-                        text: "멀티파트"
-                        font.pixelSize: Theme.fontBody
-                        font.weight: Font.DemiBold
-                        color: Theme.textSecondary
-                        anchors.top: parent.top
-                        anchors.left: parent.left
-                        anchors.topMargin: Theme.spacingSm
-                        anchors.leftMargin: Theme.spacingMd
-                    }
-
-                    RowLayout {
-                        anchors.top: multiLabel.bottom
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        anchors.margins: Theme.spacingMd
-                        anchors.topMargin: 0
-
-                        ActionButton {
-                            text: "멀티파트 SRT 합성..."
-                            primary: false
-                            enabled: !ProcessingModel.isRunning
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-                    }
-                }
-            }
-
-            // ── 전사 큐 ─────────────────────────────────
-            GlassCard {
-                id: queueCard
-                width: parent.width
-                height: 320 // 고정 높이로 설정하여 내부 스크롤 활성화
-
-                Column {
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingMd
-                    spacing: Theme.spacingSm
-
-                    Text {
-                        id: queueTitle
-                        text: "전사 큐"
-                        font.pixelSize: Theme.fontSubtitle
-                        font.weight: Font.DemiBold
-                        color: Theme.textPrimary
-                    }
-
-                    ListView {
-                        id: queueView
-                        width: parent.width
-                        height: parent.height - queueTitle.height - Theme.spacingSm - 10
-                        clip: true
-                        model: ProcessingModel.queue
-                        boundsBehavior: Theme.boundsBehavior
-                        flickDeceleration: Theme.flickDeceleration
-                        maximumFlickVelocity: Theme.maxVelocity
-                        spacing: 2
-
-                        ScrollBar.vertical: ScrollBar {
-                            active: true
-                            policy: ScrollBar.AsNeeded
-                            contentItem: Rectangle {
-                                implicitWidth: 4
-                                implicitHeight: 100
-                                radius: 2
-                                color: Theme.accentNeon
-                                opacity: parent.active ? 0.6 : 0.2
-                                Behavior on opacity { NumberAnimation { duration: 150 } }
-                            }
+                        StatusBadge {
+                            id: badgeContainer
+                            status: model.status === "done" ? "canonical"
+                                  : model.status === "error" ? "error"
+                                  : model.status === "running" ? "running"
+                                  : model.status === "pending" ? "queued"
+                                  : "none"
+                            label: model.status
+                            anchors.right: trashContainer.left
+                            anchors.rightMargin: Theme.spacingMd
+                            anchors.verticalCenter: parent.verticalCenter
                         }
 
-                        delegate: Item {
-                            id: delegateRoot
-                            width: queueView.width
-                            height: 48
-                            
-                            Rectangle {
-                                anchors.fill: parent
-                                anchors.margins: 2
-                                radius: Theme.radiusSm
-                                color: rowArea.containsMouse ? Theme.navHover : "transparent"
-                                visible: rowArea.containsMouse
-                            }
-
-                            CheckBox {
-                                id: cb
-                                checked: model.checked
-                                onToggled: ProcessingModel.toggleCheck(index, checked)
-                                anchors.left: parent.left
-                                anchors.leftMargin: Theme.spacingMd
-                                anchors.verticalCenter: parent.verticalCenter
-                                padding: 0
-                                
-                                indicator: Rectangle {
-                                    implicitWidth: 20
-                                    implicitHeight: 20
-                                    radius: 4
-                                    color: cb.checked ? Theme.accentNeon : "transparent"
-                                    border.color: cb.checked ? Theme.accentNeon : Theme.textMuted
-                                    border.width: 1.5
-
-                                    Text {
-                                        text: "✓"
-                                        anchors.centerIn: parent
-                                        color: Theme.isDark ? "#0A0E1A" : "white"
-                                        font.pixelSize: 14
-                                        font.bold: true
-                                        visible: cb.checked
-                                    }
-                                }
-                            }
+                        Item {
+                            id: trashContainer
+                            width: 32; height: 32
+                            anchors.right: parent.right
+                            anchors.rightMargin: Theme.spacingMd
+                            anchors.verticalCenter: parent.verticalCenter
 
                             Text {
-                                id: fileNameText
-                                text: model.fileName
-                                font.pixelSize: Theme.fontBody - 1
-                                font.weight: Font.Medium
-                                color: Theme.textPrimary
-                                elide: Text.ElideMiddle
-                                anchors.left: cb.right
-                                anchors.leftMargin: Theme.spacingMd
-                                anchors.right: badgeContainer.left
-                                anchors.rightMargin: Theme.spacingMd
-                                anchors.verticalCenter: parent.verticalCenter
-                                verticalAlignment: Text.AlignVCenter
-                            }
-
-                            StatusBadge {
-                                id: badgeContainer
-                                status: model.status === "done" ? "canonical"
-                                      : model.status === "error" ? "error"
-                                      : model.status === "running" ? "running"
-                                      : model.status === "pending" ? "queued"
-                                      : "none"
-                                label: model.status
-                                anchors.right: trashContainer.left
-                                anchors.rightMargin: Theme.spacingMd
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-
-                            Item {
-                                id: trashContainer
-                                width: 32; height: 32
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.spacingMd
-                                anchors.verticalCenter: parent.verticalCenter
-
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "🗑"
-                                    font.pixelSize: 18
-                                    color: delArea.containsMouse ? Theme.error : Theme.textPrimary
-                                    opacity: delArea.containsMouse ? 1.0 : 0.65
-                                    Behavior on color { ColorAnimation { duration: 150 } }
-                                    Behavior on opacity { NumberAnimation { duration: 150 } }
-                                }
-
-                                MouseArea {
-                                    id: delArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: ProcessingModel.removeQueueItem(index)
-                                }
+                                anchors.centerIn: parent
+                                text: "🗑"
+                                font.pixelSize: 18
+                                color: delArea.containsMouse ? Theme.error : Theme.textPrimary
+                                opacity: delArea.containsMouse ? 1.0 : 0.65
+                                Behavior on color { ColorAnimation { duration: 150 } }
+                                Behavior on opacity { NumberAnimation { duration: 150 } }
                             }
 
                             MouseArea {
-                                id: rowArea
+                                id: delArea
                                 anchors.fill: parent
                                 hoverEnabled: true
-                                acceptedButtons: Qt.NoButton
-                                z: -1
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: ProcessingModel.removeQueueItem(index)
                             }
                         }
 
-                        Text {
-                            visible: queueView.count === 0
-                            anchors.centerIn: parent
-                            text: "큐가 비어 있습니다. 파일을 추가하세요."
-                            font.pixelSize: Theme.fontBody
-                            color: Theme.textMuted
+                        MouseArea {
+                            id: rowArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            acceptedButtons: Qt.NoButton
+                            z: -1
                         }
+                    }
+
+                    Text {
+                        visible: queueView.count === 0
+                        anchors.centerIn: parent
+                        text: "큐가 비어 있습니다. 파일을 추가하세요."
+                        font.pixelSize: Theme.fontBody
+                        color: Theme.textMuted
                     }
                 }
             }
+        }
 
-            // ── 컨트롤 버튼 ─────────────────────────────
+        // ── 컨트롤 버튼 ─────────────────────────────
+        Row {
+            Layout.fillWidth: true
+            spacing: Theme.spacingSm
+
+            ActionButton {
+                text: "STT 시작"
+                primary: true
+                neonGlow: true
+                enabled: !ProcessingModel.isRunning
+                onClicked: {
+                    ProcessingModel.startQueueStt();
+                }
+            }
+
+            ActionButton {
+                text: "자막 생성"
+                primary: false
+                enabled: !ProcessingModel.isRunning
+                onClicked: {
+                    ProcessingModel.startQueueSubtitle();
+                }
+            }
+
+            ActionButton {
+                text: "중지"
+                primary: false
+                enabled: ProcessingModel.isRunning
+                onClicked: ProcessingModel.stop()
+            }
+        }
+
+        // ── 진행 상태 ───────────────────────────────
+        GlassCard {
+            visible: ProcessingModel.isRunning || ProcessingModel.progressPercent > 0
+            Layout.fillWidth: true
+            Layout.preferredHeight: 80
+
             Row {
-                spacing: Theme.spacingSm
+                anchors.fill: parent
+                anchors.margins: Theme.spacingMd
+                spacing: Theme.spacingMd
 
-                ActionButton {
-                    text: "STT 시작"
-                    primary: true
-                    neonGlow: true
-                    enabled: !ProcessingModel.isRunning
-                    onClicked: {
-                        ProcessingModel.startQueueStt();
-                    }
+                ProgressIndicator {
+                    circular: true
+                    width: 48; height: 48
+                    value: ProcessingModel.progressPercent / 100
+                    anchors.verticalCenter: parent.verticalCenter
                 }
 
-                ActionButton {
-                    text: "자막 생성"
-                    primary: false
-                    enabled: !ProcessingModel.isRunning
-                    onClicked: {
-                        ProcessingModel.startQueueSubtitle();
+                Column {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+
+                    Text {
+                        text: ProcessingModel.progressMessage || "대기 중..."
+                        font.pixelSize: Theme.fontBody
+                        color: Theme.textPrimary
                     }
-                }
-
-                ActionButton {
-                    text: "중지"
-                    primary: false
-                    enabled: ProcessingModel.isRunning
-                    onClicked: ProcessingModel.stop()
-                }
-            }
-
-            // ── 진행 상태 ───────────────────────────────
-            GlassCard {
-                visible: ProcessingModel.isRunning || ProcessingModel.progressPercent > 0
-                width: parent.width
-                height: 80
-
-                Row {
-                    anchors.fill: parent
-                    anchors.margins: Theme.spacingMd
-                    spacing: Theme.spacingMd
-
-                    ProgressIndicator {
-                        circular: true
-                        width: 48; height: 48
-                        value: ProcessingModel.progressPercent / 100
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Column {
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 4
-
-                        Text {
-                            text: ProcessingModel.progressMessage || "대기 중..."
-                            font.pixelSize: Theme.fontBody
-                            color: Theme.textPrimary
-                        }
-                        Text {
-                            text: ProcessingModel.progressPercent + "%"
-                            font.pixelSize: Theme.fontCaption
-                            color: Theme.textSecondary
-                        }
+                    Text {
+                        text: ProcessingModel.progressPercent + "%"
+                        font.pixelSize: Theme.fontCaption
+                        color: Theme.textSecondary
                     }
                 }
             }
+        }
 
-            // ── 로그 ────────────────────────────────────
-            LogPanel {
-                id: procLog
-                width: parent.width
-                implicitHeight: 200
+        // ── 로그 패널 ───────────────────────────────
+        LogPanel {
+            id: procLog
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.minimumHeight: 160
 
-                Connections {
-                    target: ProcessingModel
-                    function onLogMessage(msg) { procLog.append(msg); }
-                }
+            Connections {
+                target: ProcessingModel
+                function onLogMessage(msg) { procLog.append(msg); }
             }
         }
     }

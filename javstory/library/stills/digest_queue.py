@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import queue
 from pathlib import Path
@@ -26,12 +27,19 @@ class DigestQueueManager:
         self._queue = queue.Queue()
         self._workers = []
         # 데몬(daemon) 옵션 True: 앱이 종료되면 이 스레드도 미련 없이 즉시 죽음
-        # NVIDIA CUDA 하드웨어 가속 4병렬 (RTX 3080Ti 쾌적 환경 기준)
-        for i in range(4):
+        raw = (os.environ.get("JAVSTORY_DIGEST_QUEUE_WORKERS", "") or "").strip()
+        try:
+            n = int(raw) if raw else 4
+        except ValueError:
+            n = 4
+        n = max(1, min(8, n))
+
+        # NVIDIA CUDA 하드웨어 가속 기본 4병렬 (환경변수로 조절)
+        for i in range(n):
             t = threading.Thread(target=self._worker_loop, daemon=True, name=f"DigestWorkerThread-{i+1}")
             t.start()
             self._workers.append(t)
-        logger.info("🎥 백그라운드 다이제스트 스케줄러가 활성화되었습니다 (CUDA 4병렬).")
+        logger.info(f"🎥 백그라운드 다이제스트 스케줄러가 활성화되었습니다 (CUDA {n}병렬).")
 
     def push_job(self, video_path: Path | str, output_path: Path | str, product_code: str = "Unknown"):
         """

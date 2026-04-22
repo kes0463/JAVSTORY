@@ -54,6 +54,10 @@ Item {
     property int digestResumePositionMs: 0
     property int digestSeekPollCount: 0
 
+    /** 표지 호버 하이라이트 미리보기 → 라이트박스 전체화면으로 이어 재생할 때(ms) */
+    property int highlightResumePositionMs: 0
+    property int highlightSeekPollCount: 0
+
     focus: true
 
     function resetDetailFocus() {
@@ -112,14 +116,19 @@ Item {
             return
         digestSeekApplyTimer.stop()
         digestSeekPollCount = 0
-        // 호버 중 다이제스트가 재생 중이면 현재 위치를 풀스크린에 이어 붙임
-        if (coverHoverTimer.runningDigest && LibraryModel.detail.digestPath !== "") {
-            digestResumePositionMs = digestHoverPlayer.position
-            digestHoverPlayer.pause()
+        highlightSeekApplyTimer.stop()
+        highlightSeekPollCount = 0
+
+        // 호버 중 하이라이트가 재생 중이면 현재 위치를 라이트박스 하이라이트로 이어 붙임
+        digestResumePositionMs = 0
+        if (coverHoverTimer.runningDigest && LibraryModel.detail.highlightPath !== "") {
+            highlightResumePositionMs = highlightHoverPlayer.position
+            highlightHoverPlayer.pause()
+            lightboxOverlay.coverModePage = 1
         } else {
-            digestResumePositionMs = 0
+            highlightResumePositionMs = 0
+            lightboxOverlay.coverModePage = 0
         }
-        lightboxOverlay.coverModeDigestActive = coverHoverTimer.runningDigest // 움짤 재생 중이었다면 바로 움짤 풀스크린으로
         lightboxOverlay.coverMode = true
         lightboxOverlay.allViewMode = false
         lightboxImage.source = "file:///" + LibraryModel.detail.coverPath
@@ -131,6 +140,9 @@ Item {
         digestSeekApplyTimer.stop()
         digestResumePositionMs = 0
         digestSeekPollCount = 0
+        highlightSeekApplyTimer.stop()
+        highlightResumePositionMs = 0
+        highlightSeekPollCount = 0
         zoomContainer.scale = 1.0
         zoomContainer.x = 0
         zoomContainer.y = 0
@@ -600,7 +612,9 @@ Item {
 
         property int currentIndex: 0
         property bool coverMode: false
-        property bool coverModeDigestActive: false // 표지 전체화면 중 움짤 재생 여부
+        // 표지 전체화면(커버 모드) 3페이지: 0=표지, 1=하이라이트, 2=Digest
+        // (없는 페이지는 좌/우 이동에서 자동 스킵)
+        property int coverModePage: 0
         property bool allViewMode: false // 전체 보기 모드 여부
         property int allViewCols: 4 // 바둑판 너비(열 개수)
 
@@ -638,21 +652,63 @@ Item {
             var n = paths.length
 
             if (lightboxOverlay.coverMode) {
-                if (k === Qt.Key_Left && lightboxOverlay.coverModeDigestActive) {
-                    lightboxOverlay.coverModeDigestActive = false
-                    zoomContainer.scale = 1.0
-                    event.accepted = true
-                } else if (k === Qt.Key_Right && !lightboxOverlay.coverModeDigestActive && LibraryModel.detail.digestPath !== "") {
-                    lightboxOverlay.coverModeDigestActive = true
-                    zoomContainer.scale = 1.0
-                    event.accepted = true
-                } else if (k === Qt.Key_Space && lightboxOverlay.coverModeDigestActive) {
-                    if (digestFullscreenPlayer.playbackState === MediaPlayer.PlayingState) {
-                        digestFullscreenPlayer.pause()
-                    } else {
-                        digestFullscreenPlayer.play()
+                function hasHighlight() { return LibraryModel.detail.highlightPath !== "" }
+                function hasDigest() { return LibraryModel.detail.digestPath !== "" }
+
+                function nextCoverPage() {
+                    var p = lightboxOverlay.coverModePage
+                    if (p === 0) {
+                        if (hasHighlight()) return 1
+                        if (hasDigest()) return 2
+                        return 0
+                    }
+                    if (p === 1) {
+                        if (hasDigest()) return 2
+                        return 1
+                    }
+                    return 2
+                }
+
+                function prevCoverPage() {
+                    var p2 = lightboxOverlay.coverModePage
+                    if (p2 === 2) {
+                        if (hasHighlight()) return 1
+                        return 0
+                    }
+                    if (p2 === 1) return 0
+                    return 0
+                }
+
+                if (k === Qt.Key_Left) {
+                    var prev = prevCoverPage()
+                    if (prev !== lightboxOverlay.coverModePage) {
+                        lightboxOverlay.coverModePage = prev
+                        zoomContainer.scale = 1.0
                     }
                     event.accepted = true
+                } else if (k === Qt.Key_Right) {
+                    var nxt = nextCoverPage()
+                    if (nxt !== lightboxOverlay.coverModePage) {
+                        lightboxOverlay.coverModePage = nxt
+                        zoomContainer.scale = 1.0
+                    }
+                    event.accepted = true
+                } else if (k === Qt.Key_Space) {
+                    if (lightboxOverlay.coverModePage === 1) {
+                        if (highlightFullscreenPlayer.playbackState === MediaPlayer.PlayingState) {
+                            highlightFullscreenPlayer.pause()
+                        } else {
+                            highlightFullscreenPlayer.play()
+                        }
+                        event.accepted = true
+                    } else if (lightboxOverlay.coverModePage === 2) {
+                        if (digestFullscreenPlayer.playbackState === MediaPlayer.PlayingState) {
+                            digestFullscreenPlayer.pause()
+                        } else {
+                            digestFullscreenPlayer.play()
+                        }
+                        event.accepted = true
+                    }
                 }
                 return
             }
@@ -795,11 +851,77 @@ Item {
                     height: parent.height * 0.95
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
-                    visible: (!lightboxOverlay.allViewMode) && !(lightboxOverlay.coverMode && lightboxOverlay.coverModeDigestActive)
+                    visible: (!lightboxOverlay.allViewMode) && !(lightboxOverlay.coverMode && (lightboxOverlay.coverModePage !== 0))
                     source: ""
                 }
 
-                // 다이제스트 타임랩스 극장 플레이어
+                // 하이라이트 극장 플레이어 (오디오 ON)
+                MediaPlayer {
+                    id: highlightFullscreenPlayer
+                    source: LibraryModel.detail.highlightPath ? "file:///" + LibraryModel.detail.highlightPath : ""
+                    videoOutput: highlightFullscreenVideo
+                    loops: MediaPlayer.Infinite
+                    audioOutput: highlightFullscreenAudio
+                }
+
+                AudioOutput {
+                    id: highlightFullscreenAudio
+                    volume: 1.0
+                }
+
+                VideoOutput {
+                    id: highlightFullscreenVideo
+                    anchors.centerIn: parent
+                    width: parent.width * 0.95
+                    height: parent.height * 0.95
+                    fillMode: VideoOutput.PreserveAspectFit
+                    visible: lightboxOverlay.coverMode && lightboxOverlay.coverModePage === 1
+
+                    onVisibleChanged: {
+                        if (visible) {
+                            highlightFullscreenPlayer.pause()
+                            var resumeH = root.highlightResumePositionMs
+                            var dH = highlightFullscreenPlayer.duration
+                            if (resumeH > 0 && dH > 0) {
+                                root.highlightSeekPollCount = 0
+                                highlightSeekApplyTimer.start()
+                            } else {
+                                highlightFullscreenPlayer.position = 0
+                                highlightFullscreenPlayer.play()
+                            }
+                        } else {
+                            highlightSeekApplyTimer.stop()
+                            highlightFullscreenPlayer.pause()
+                        }
+                    }
+                }
+
+                Timer {
+                    id: highlightSeekApplyTimer
+                    interval: 50
+                    repeat: true
+                    onTriggered: {
+                        root.highlightSeekPollCount += 1
+                        var resume = root.highlightResumePositionMs
+                        var d = highlightFullscreenPlayer.duration
+                        if (resume > 0 && d > 0) {
+                            highlightFullscreenPlayer.position = Math.min(
+                                resume,
+                                Math.max(0, d - 100))
+                            root.highlightResumePositionMs = 0
+                            highlightSeekApplyTimer.stop()
+                            root.highlightSeekPollCount = 0
+                            highlightFullscreenPlayer.play()
+                        } else if (root.highlightSeekPollCount >= 40) {
+                            highlightSeekApplyTimer.stop()
+                            root.highlightSeekPollCount = 0
+                            root.highlightResumePositionMs = 0
+                            highlightFullscreenPlayer.play()
+                        }
+                    }
+                }
+
+                // 다이제스트 타임랩스 극장 플레이어 (무음 유지)
                 MediaPlayer {
                     id: digestFullscreenPlayer
                     source: LibraryModel.detail.digestPath ? "file:///" + LibraryModel.detail.digestPath : ""
@@ -839,7 +961,7 @@ Item {
                     width: parent.width * 0.95
                     height: parent.height * 0.95
                     fillMode: VideoOutput.PreserveAspectFit
-                    visible: lightboxOverlay.coverMode && lightboxOverlay.coverModeDigestActive
+                    visible: lightboxOverlay.coverMode && lightboxOverlay.coverModePage === 2
 
                     onVisibleChanged: {
                         if (visible) {
@@ -957,13 +1079,58 @@ Item {
 
         // ── 상영관 전용 하위 컨트롤 (Flickable 외부로 이동하여 이벤트 가로채기 방지) ──
         Item {
+            id: highlightSeekbarContainer
+            width: parent.width * 0.8
+            height: 36 // 마우스로 잡기 편하게 큰 영역 확보
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 40
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: lightboxOverlay.coverMode && lightboxOverlay.coverModePage === 1
+            z: 999 // 모든 상영관 레이어보다 위에 표시
+
+            // 시각적인 얇은 바
+            Rectangle {
+                width: parent.width
+                height: 6
+                anchors.centerIn: parent
+                color: Qt.rgba(1, 1, 1, 0.2)
+                radius: 3
+
+                Rectangle {
+                    height: parent.height
+                    width: highlightFullscreenPlayer.duration > 0 ? (parent.width * (highlightFullscreenPlayer.position / highlightFullscreenPlayer.duration)) : 0
+                    color: Theme.accentNeon
+                    radius: 3
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                preventStealing: true // 중요: Flickable에 이벤트를 뺏기지 않음
+
+                function updatePosition(mouse) {
+                    if (highlightFullscreenPlayer.duration > 0) {
+                        var p = Math.max(0, Math.min(width, mouse.x))
+                        highlightFullscreenPlayer.position = (p / width) * highlightFullscreenPlayer.duration
+                    }
+                }
+
+                onPressed: (mouse) => updatePosition(mouse)
+                onPositionChanged: (mouse) => {
+                    if (pressed) updatePosition(mouse)
+                }
+            }
+        }
+
+        Item {
             id: digestSeekbarContainer
             width: parent.width * 0.8
             height: 36 // 마우스로 잡기 편하게 큰 영역 확보
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 40
             anchors.horizontalCenter: parent.horizontalCenter
-            visible: lightboxOverlay.coverMode && lightboxOverlay.coverModeDigestActive
+            visible: lightboxOverlay.coverMode && lightboxOverlay.coverModePage === 2
             z: 999 // 모든 상영관 레이어보다 위에 표시
 
             // 시각적인 얇은 바
@@ -1070,7 +1237,7 @@ Item {
             width: 50; height: 50
             radius: 25
             color: Qt.rgba(1,1,1,0.12)
-            visible: (!lightboxOverlay.coverMode && !lightboxOverlay.allViewMode && lightboxOverlay.currentIndex > 0) || (lightboxOverlay.coverMode && lightboxOverlay.coverModeDigestActive)
+            visible: (!lightboxOverlay.coverMode && !lightboxOverlay.allViewMode && lightboxOverlay.currentIndex > 0) || (lightboxOverlay.coverMode && lightboxOverlay.coverModePage > 0)
             z: 110
 
             Text { anchors.centerIn: parent; text: "‹"; font.pixelSize: 32; color: "#ffffff" }
@@ -1078,14 +1245,19 @@ Item {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
-                    if (lightboxOverlay.coverMode && lightboxOverlay.coverModeDigestActive) {
-                        lightboxOverlay.coverModeDigestActive = false
+                    if (lightboxOverlay.coverMode) {
+                        // 커버 3페이지 이전
+                        if (lightboxOverlay.coverModePage === 2 && LibraryModel.detail.highlightPath !== "") {
+                            lightboxOverlay.coverModePage = 1
+                        } else {
+                            lightboxOverlay.coverModePage = 0
+                        }
                         zoomContainer.scale = 1.0
-                    } else {
-                        zoomContainer.scale = 1.0
-                        lightboxOverlay.currentIndex--
-                        lightboxImage.source = "file:///" + LibraryModel.detail.stillPaths[lightboxOverlay.currentIndex]
+                        return
                     }
+                    zoomContainer.scale = 1.0
+                    lightboxOverlay.currentIndex--
+                    lightboxImage.source = "file:///" + LibraryModel.detail.stillPaths[lightboxOverlay.currentIndex]
                 }
             }
         }
@@ -1097,7 +1269,7 @@ Item {
             width: 50; height: 50
             radius: 25
             color: Qt.rgba(1,1,1,0.12)
-            visible: (!lightboxOverlay.coverMode && !lightboxOverlay.allViewMode && lightboxOverlay.currentIndex < LibraryModel.detail.stillPaths.length - 1) || (lightboxOverlay.coverMode && !lightboxOverlay.coverModeDigestActive && LibraryModel.detail.digestPath !== "")
+            visible: (!lightboxOverlay.coverMode && !lightboxOverlay.allViewMode && lightboxOverlay.currentIndex < LibraryModel.detail.stillPaths.length - 1) || (lightboxOverlay.coverMode && (LibraryModel.detail.highlightPath !== "" || LibraryModel.detail.digestPath !== "") && lightboxOverlay.coverModePage < 2)
             z: 110
 
             Text { anchors.centerIn: parent; text: "›"; font.pixelSize: 32; color: "#ffffff" }
@@ -1105,14 +1277,25 @@ Item {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
-                    if (lightboxOverlay.coverMode && !lightboxOverlay.coverModeDigestActive) {
-                        lightboxOverlay.coverModeDigestActive = true
+                    if (lightboxOverlay.coverMode) {
+                        // 커버 3페이지 다음 (없는 페이지는 스킵)
+                        if (lightboxOverlay.coverModePage === 0) {
+                            if (LibraryModel.detail.highlightPath !== "") {
+                                lightboxOverlay.coverModePage = 1
+                            } else if (LibraryModel.detail.digestPath !== "") {
+                                lightboxOverlay.coverModePage = 2
+                            }
+                        } else if (lightboxOverlay.coverModePage === 1) {
+                            if (LibraryModel.detail.digestPath !== "") {
+                                lightboxOverlay.coverModePage = 2
+                            }
+                        }
                         zoomContainer.scale = 1.0
-                    } else {
-                        zoomContainer.scale = 1.0
-                        lightboxOverlay.currentIndex++
-                        lightboxImage.source = "file:///" + LibraryModel.detail.stillPaths[lightboxOverlay.currentIndex]
+                        return
                     }
+                    zoomContainer.scale = 1.0
+                    lightboxOverlay.currentIndex++
+                    lightboxImage.source = "file:///" + LibraryModel.detail.stillPaths[lightboxOverlay.currentIndex]
                 }
             }
         }
@@ -1212,14 +1395,149 @@ Item {
             }
 
             Row {
+                id: actionRow
                 spacing: Theme.spacingSm
                 visible: LibraryModel.detail.productCode !== ""
+
+                property var highlightState: ({ "status": "none", "progress": 0, "message": "" })
+                property var previewState: ({ "status": "none", "progress": 0, "message": "" })
+
+                Timer {
+                    id: highlightStateTimer
+                    interval: 200
+                    repeat: true
+                    running: actionRow.visible && LibraryModel.detail.productCode !== "" && !LibraryModel.detailEditing
+                    onTriggered: {
+                        try {
+                            actionRow.highlightState = HighlightQueue.productState(LibraryModel.detail.productCode)
+                        } catch (e) {
+                            actionRow.highlightState = ({ "status": "none", "progress": 0, "message": "" })
+                        }
+                        try {
+                            actionRow.previewState = PreviewQueue.productState(LibraryModel.detail.productCode)
+                        } catch (e2) {
+                            actionRow.previewState = ({ "status": "none", "progress": 0, "message": "" })
+                        }
+                    }
+                }
 
                 ActionButton {
                     text: "편집"
                     primary: false
                     visible: !LibraryModel.detailEditing
                     onClicked: LibraryModel.beginDetailEdit()
+                }
+
+                ActionButton {
+                    text: "🔄 재크롤링"
+                    primary: false
+                    visible: !LibraryModel.detailEditing
+                    onClicked: {
+                        var pc = (LibraryModel.detail.productCode || "").trim()
+                        if (pc !== "")
+                            HarvestModel.recrawlProducts([pc], true)
+                    }
+                }
+
+                Popup {
+                    id: deleteDialog
+                    modal: true
+                    dim: true
+                    focus: true
+                    closePolicy: Popup.CloseOnEscape
+                    padding: Theme.spacingMd
+                    parent: Overlay.overlay
+                    anchors.centerIn: Overlay.overlay
+                    width: Math.min(520, Overlay.overlay.width - 48)
+                    z: 250
+
+                    property bool deleteFiles: false
+
+                    background: Rectangle {
+                        radius: Theme.radiusMd
+                        color: Theme.bgSecondary
+                        border.color: Theme.glassBorder
+                        border.width: 1
+                    }
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        spacing: Theme.spacingSm
+
+                        Text {
+                            text: "라이브러리 삭제"
+                            font.pixelSize: Theme.fontSubtitle
+                            font.weight: Font.DemiBold
+                            color: Theme.textPrimary
+                            Layout.fillWidth: true
+                        }
+
+                        Text {
+                            text: "작품 " + LibraryModel.detail.productCode + " 을(를) 라이브러리에서 삭제할까요?"
+                            wrapMode: Text.WordWrap
+                            color: Theme.textSecondary
+                            font.pixelSize: Theme.fontBody
+                            Layout.fillWidth: true
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: 1
+                            color: Theme.glassBorder
+                        }
+
+                        CheckBox {
+                            id: deleteFilesCheck
+                            text: "파일도 함께 삭제 (주의: 되돌릴 수 없음)"
+                            checked: false
+                            onToggled: deleteDialog.deleteFiles = checked
+                        }
+
+                        Text {
+                            text: deleteFilesCheck.checked
+                                  ? "DB + 작품 폴더(미디어/산출물)까지 함께 삭제합니다."
+                                  : "DB 메타데이터만 삭제합니다. (파일은 유지)"
+                            wrapMode: Text.WordWrap
+                            color: deleteFilesCheck.checked ? Theme.warning : Theme.textMuted
+                            font.pixelSize: Theme.fontCaption
+                            Layout.fillWidth: true
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacingSm
+                            Item { Layout.fillWidth: true }
+                            ActionButton {
+                                text: "취소"
+                                primary: false
+                                onClicked: deleteDialog.close()
+                            }
+                            ActionButton {
+                                text: deleteFilesCheck.checked ? "삭제(파일 포함)" : "삭제"
+                                primary: true
+                                neonGlow: true
+                                onClicked: {
+                                    var pc = LibraryModel.detail.productCode
+                                    deleteDialog.close()
+                                    if (pc !== "") {
+                                        LibraryModel.deleteFromLibrary(pc, deleteDialog.deleteFiles)
+                                        root.back()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                ActionButton {
+                    text: "🗑 삭제"
+                    primary: false
+                    visible: !LibraryModel.detailEditing
+                    onClicked: {
+                        deleteDialog.deleteFiles = false
+                        deleteFilesCheck.checked = false
+                        deleteDialog.open()
+                    }
                 }
 
                 ActionButton {
@@ -1252,6 +1570,82 @@ Item {
                             return
                         }
                         LibraryModel.startSubtitleForDetail(LibraryModel.detail.productCode, LibraryModel.detail.folderPath)
+                    }
+                }
+
+                ActionButton {
+                    text: {
+                        var st = actionRow.highlightState.status || "none"
+                        var p = actionRow.highlightState.progress || 0
+                        if (st === "queued") return "⏳ 하이라이트 대기"
+                        if (st === "running") return "⏳ 하이라이트 생성 " + p + "%"
+                        if (LibraryModel.detail.highlightPath !== "") return "🎬 하이라이트 재생성"
+                        return "🎬 하이라이트 생성"
+                    }
+                    primary: false
+                    neonGlow: true
+                    visible: !LibraryModel.detailEditing
+                    enabled: true
+                    clip: true
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: {
+                            var st = actionRow.highlightState.status || "none"
+                            var p = actionRow.highlightState.progress || 0
+                            if (st !== "running") return 0
+                            return parent.width * (p / 100.0)
+                        }
+                        color: Qt.rgba(56/255, 189/255, 248/255, 0.35)
+                        visible: (actionRow.highlightState.status === "running")
+                        Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutQuad } }
+                    }
+                    onClicked: {
+                        if (LibraryModel.detail.videoPath === "") {
+                            window.showToast("하이라이트를 생성하려면 동영상이 필요합니다.", "warning")
+                            return
+                        }
+                        LibraryModel.generateHighlight(LibraryModel.detail.productCode, LibraryModel.detail.videoPath)
+                    }
+                }
+
+                ActionButton {
+                    text: {
+                        var st = actionRow.previewState.status || "none"
+                        var p = actionRow.previewState.progress || 0
+                        if (st === "queued") return "⏳ 프리뷰 대기"
+                        if (st === "running") return "⏳ 프리뷰 재생성 " + p + "%"
+                        return "🖼 프리뷰 재생성"
+                    }
+                    primary: false
+                    neonGlow: true
+                    visible: !LibraryModel.detailEditing
+                    enabled: true
+                    clip: true
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: {
+                            var st = actionRow.previewState.status || "none"
+                            var p = actionRow.previewState.progress || 0
+                            if (st !== "running") return 0
+                            return parent.width * (p / 100.0)
+                        }
+                        color: Qt.rgba(56/255, 189/255, 248/255, 0.35)
+                        visible: (actionRow.previewState.status === "running")
+                        Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutQuad } }
+                    }
+
+                    onClicked: {
+                        if (LibraryModel.detail.videoPath === "") {
+                            window.showToast("프리뷰를 재생성하려면 동영상이 필요합니다.", "warning")
+                            return
+                        }
+                        PreviewQueue.regenerate(LibraryModel.detail.productCode, LibraryModel.detail.videoPath)
                     }
                 }
 
@@ -1324,22 +1718,27 @@ Item {
                             asynchronous: true
                         }
 
-                        // 다이제스트 타임랩스 플레이어 컴포넌트
+                        // 하이라이트 플레이어 컴포넌트 (호버 3초 후)
                         MediaPlayer {
-                            id: digestHoverPlayer
-                            source: LibraryModel.detail.digestPath ? "file:///" + LibraryModel.detail.digestPath : ""
-                            videoOutput: coverHoverDigestVideo
+                            id: highlightHoverPlayer
+                            source: LibraryModel.detail.highlightPath ? "file:///" + LibraryModel.detail.highlightPath : ""
+                            videoOutput: coverHoverHighlightVideo
                             loops: MediaPlayer.Infinite
-                            audioOutput: null
+                            audioOutput: highlightHoverAudio
                         }
 
                         VideoOutput {
-                            id: coverHoverDigestVideo
+                            id: coverHoverHighlightVideo
                             anchors.fill: parent
                             fillMode: VideoOutput.PreserveAspectCrop // 커버 패널 규격에 맞춰 꽉 차게 크롭
                             opacity: coverHoverTimer.runningDigest ? 1.0 : 0.0
                             visible: opacity > 0
                             Behavior on opacity { NumberAnimation { duration: 300 } }
+                        }
+
+                        AudioOutput {
+                            id: highlightHoverAudio
+                            volume: 1.0
                         }
 
                         Timer {
@@ -1352,9 +1751,9 @@ Item {
                                 if (!runningDigest) {
                                     hoverMs += 100
                                     // 3초 대기 후 재생 시작
-                                    if (hoverMs >= 3000 && LibraryModel.detail.digestPath !== "") {
+                                    if (hoverMs >= 3000 && LibraryModel.detail.highlightPath !== "") {
                                         runningDigest = true
-                                        digestHoverPlayer.play()
+                                        highlightHoverPlayer.play()
                                     }
                                 }
                             }
@@ -1401,7 +1800,7 @@ Item {
                                 coverHoverTimer.running = false
                                 coverHoverTimer.hoverMs = 0
                                 coverHoverTimer.runningDigest = false
-                                digestHoverPlayer.pause()
+                                highlightHoverPlayer.pause()
                             }
                             onClicked: {
                                 openCoverLightbox()
@@ -1522,7 +1921,25 @@ Item {
                             Flow {
                                 width: parent.width
                                 spacing: 6
-                                visible: LibraryModel.detail.genresKo !== ""
+                                visible: LibraryModel.detail.genresKo !== "" || LibraryModel.detail.lampMopa
+
+                                Rectangle {
+                                    height: 24
+                                    width: mopaLabel.width + 16
+                                    radius: 6
+                                    visible: LibraryModel.detail.lampMopa
+                                    color: Qt.rgba(Theme.accentNeon.r, Theme.accentNeon.g, Theme.accentNeon.b, 0.12)
+                                    border.color: Qt.rgba(Theme.accentNeon.r, Theme.accentNeon.g, Theme.accentNeon.b, 0.3)
+                                    border.width: 1
+                                    Text {
+                                        id: mopaLabel
+                                        anchors.centerIn: parent
+                                        text: "모자이크 제거"
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                        color: Theme.accentNeon
+                                    }
+                                }
 
                                 Repeater {
                                     model: (LibraryModel.detail.genresKo || "").split(",")
@@ -1817,6 +2234,17 @@ Item {
                         stageName: "자체자막"
                         status: LibraryModel.detail.lampHardcoded ? "done" : "pending"
                     }
+
+                    Text {
+                        text: "\u27A1"
+                        font.pixelSize: 20
+                        color: Theme.textMuted
+                    }
+
+                    PipelineStage {
+                        stageName: "모자이크 제거"
+                        status: LibraryModel.detail.lampMopa ? "done" : "pending"
+                    }
                 }
             }
 
@@ -1915,7 +2343,7 @@ Item {
                         }
                         Text {
                             id: grokTitle
-                            text: "씬 분석 (Grok)"
+                            text: "씬 분석 (Grok)" + (LibraryModel.detail.grokVerified ? "" : " · 미검증")
                             font.pixelSize: Theme.fontSubtitle
                             font.weight: Font.DemiBold
                             color: Theme.textPrimary

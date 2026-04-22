@@ -191,7 +191,7 @@ class SettingsView(QWidget):
     # ── 값 로드 ─────────────────────────────────────────────
     def _load_current_values(self):
         from javstory.config import secrets_manager
-        from javstory.config.app_config import MEDIA_ROOT
+        from javstory.config.app_config import E_MEDIA_ROOT
 
         key = secrets_manager.get_openrouter_api_key() or ""
         self.api_key_input.setText(key)
@@ -199,7 +199,7 @@ class SettingsView(QWidget):
         ollama = os.environ.get("JAVSTORY_OLLAMA_URL", OLLAMA_BASE_URL)
         self.ollama_url_input.setText(ollama)
 
-        self.media_input.setText(str(MEDIA_ROOT))
+        self.media_input.setText(str(E_MEDIA_ROOT))
 
         whisper = os.environ.get("JAVSTORY_WHISPER_MODEL", "large-v2")
         model_map = {"large-v2": 0, "large-v3": 1, "medium": 2, "small": 3, "turbo": 4}

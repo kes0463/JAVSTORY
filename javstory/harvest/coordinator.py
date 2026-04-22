@@ -20,9 +20,10 @@ from javstory.harvest.database import get_db_session_ctx, upsert_jav_metadata, G
 from javstory.harvest.translator import MetadataTranslator
 from javstory.utils.actress_resolver import ActressResolver
 from javstory.utils.assets_handler import MetadataAssetsHandler
-from javstory.config.app_config import MEDIA_ROOT, story_analysis_enabled_from_env
+from javstory.config.app_config import story_analysis_enabled_from_env
 
 from javstory.utils.common import log_ts as _log_ts, tagify
+from javstory.utils.perf_log import perf_span, log_perf
 
 
 def log_ts(msg: str):
@@ -60,6 +61,7 @@ async def run_crawler_for_video_path(
     code = explicit or path_obj.stem.upper()
     
     log_ts(f"--- 하베스트 시작: {code} ---")
+    log_perf("harvest.start", product_code=code, has_video=bool(path_obj.is_file()))
     
     # [수정] video_path로부터 폴더 경로 추출 (파일이면 부모, 문자열이면 그대로)
     v_path = Path(video_path)
@@ -118,8 +120,10 @@ async def run_crawler_for_video_path(
             log_ts(f"⚠️ {code} 사전 DB 확인 오류: {e}")
 
         # 1. 크롤링 (Metadata Ingestion)
-        if needs_crawling:
-            res = await crawler.fetch_metadata_smart(code)
+        # 재크롤링(force_rebuild_story_context)일 때는 DB 상태와 무관하게 항상 웹 수집을 다시 시도한다.
+        if needs_crawling or force_rebuild_story_context:
+            with perf_span("harvest.crawl", product_code=code):
+                res = await crawler.fetch_metadata_smart(code)
             if not res:
                 log_ts(f"⚠️ {code} 크롤링 실패 (데이터 없음)")
                 return {"error": "crawling_failed"}
@@ -140,7 +144,8 @@ async def run_crawler_for_video_path(
         resolved_maker = _resolve_maker(raw_maker)
         
         # 3. AI 다국어 번역 (LLM Translation)
-        if needs_translation:
+        # 재크롤링(force_rebuild_story_context)일 때는 번역도 항상 다시 수행한다(기존 값 덮어쓰기 전제).
+        if needs_translation or force_rebuild_story_context:
             approved_terms = {
                 "ko": {
                     **{ja: ko for ja, ko in zip(resolved_actors["ja"], resolved_actors["ko"]) if ja != ko},
@@ -155,133 +160,188 @@ async def run_crawler_for_video_path(
             }
             
             log_ts(f"🚀 AI 다국어 번역 중...")
-            trans_res = await translator.translate_metadata_batch(
-                code, raw_title, raw_synopsis, 
-                actors=raw_actors, genres=raw_genres, maker=raw_maker,
-                approved_terms=approved_terms
-            )
+            with perf_span("harvest.translate", product_code=code):
+                trans_res = await translator.translate_metadata_batch(
+                    code,
+                    raw_title,
+                    raw_synopsis,
+                    actors=raw_actors,
+                    genres=raw_genres,
+                    maker=raw_maker,
+                    approved_terms=approved_terms,
+                )
 
         # 4. DB Upsert (Persistence)
-        with get_db_session_ctx() as session:
-            # [4-1] 제목 & 시놉시스 (AI 결과 우선, 실패 시 원본)
-            titles = {
-                "title_ja": trans_res.get("title_ja", raw_title),
-                "title_ko": trans_res.get("title_ko", raw_title),
-                "title_en": trans_res.get("title_en", raw_title),
-                "title_zh_cn": trans_res.get("title_zh_cn", raw_title),
-                "title_zh_tw": trans_res.get("title_zh_tw", raw_title),
-            }
-            synopses = {
-                "synopsis_ja": trans_res.get("synopsis_ja", raw_synopsis),
-                "synopsis_ko": trans_res.get("synopsis_ko", raw_synopsis),
-                "synopsis_en": trans_res.get("synopsis_en", raw_synopsis),
-                "synopsis_zh_cn": trans_res.get("synopsis_zh_cn", raw_synopsis),
-                "synopsis_zh_tw": trans_res.get("synopsis_zh_tw", raw_synopsis),
-            }
+        with perf_span("harvest.db_upsert", product_code=code):
+            with get_db_session_ctx() as session:
+                # [4-1] 제목 & 시놉시스 (AI 결과 우선, 실패 시 원본)
+                titles = {
+                    "title_ja": trans_res.get("title_ja", raw_title),
+                    "title_ko": trans_res.get("title_ko", raw_title),
+                    "title_en": trans_res.get("title_en", raw_title),
+                    "title_zh_cn": trans_res.get("title_zh_cn", raw_title),
+                    "title_zh_tw": trans_res.get("title_zh_tw", raw_title),
+                }
+                synopses = {
+                    "synopsis_ja": trans_res.get("synopsis_ja", raw_synopsis),
+                    "synopsis_ko": trans_res.get("synopsis_ko", raw_synopsis),
+                    "synopsis_en": trans_res.get("synopsis_en", raw_synopsis),
+                    "synopsis_zh_cn": trans_res.get("synopsis_zh_cn", raw_synopsis),
+                    "synopsis_zh_tw": trans_res.get("synopsis_zh_tw", raw_synopsis),
+                }
 
-            def merge_list(db_list: list, ai_list: list, ja_list: list) -> list:
-                if not ai_list: return db_list
-                if len(db_list) != len(ai_list): return ai_list
-                res_list = []
-                for db, ai, ja in zip(db_list, ai_list, ja_list):
-                    if db != ja: res_list.append(db)
-                    else: res_list.append(ai or db)
-                return res_list
+                def merge_list(db_list: list, ai_list: list, ja_list: list) -> list:
+                    if not ai_list:
+                        return db_list
+                    if len(db_list) != len(ai_list):
+                        return ai_list
+                    res_list = []
+                    for db, ai, ja in zip(db_list, ai_list, ja_list):
+                        if db != ja:
+                            res_list.append(db)
+                        else:
+                            res_list.append(ai or db)
+                    return res_list
 
-            ja_actors = resolved_actors["ja"]
-            actors_ko = tagify(merge_list(resolved_actors["ko"], trans_res.get("actors_ko", []), ja_actors))
-            actors_romaji = tagify(merge_list(resolved_actors["romaji"], trans_res.get("actors_romaji", []), ja_actors))
-            actors_zh_cn = tagify(merge_list(resolved_actors["zh_cn"], trans_res.get("actors_zh_cn", []), ja_actors))
-            actors_zh_tw = tagify(merge_list(resolved_actors["zh_tw"], trans_res.get("actors_zh_tw", []), ja_actors))
+                ja_actors = resolved_actors["ja"]
+                actors_ko = tagify(merge_list(resolved_actors["ko"], trans_res.get("actors_ko", []), ja_actors))
+                actors_romaji = tagify(
+                    merge_list(resolved_actors["romaji"], trans_res.get("actors_romaji", []), ja_actors)
+                )
+                actors_zh_cn = tagify(
+                    merge_list(resolved_actors["zh_cn"], trans_res.get("actors_zh_cn", []), ja_actors)
+                )
+                actors_zh_tw = tagify(
+                    merge_list(resolved_actors["zh_tw"], trans_res.get("actors_zh_tw", []), ja_actors)
+                )
 
-            ja_genres = resolved_genres["ja"]
-            genres_ko = tagify(merge_list(resolved_genres["ko"], trans_res.get("genres_ko", []), ja_genres))
-            genres_en = tagify(merge_list(resolved_genres["en"], trans_res.get("genres_en", []), ja_genres))
-            genres_zh_cn = tagify(merge_list(resolved_genres["zh_cn"], trans_res.get("genres_zh_cn", []), ja_genres))
-            genres_zh_tw = tagify(merge_list(resolved_genres["zh_tw"], trans_res.get("genres_zh_tw", []), ja_genres))
+                ja_genres = resolved_genres["ja"]
+                genres_ko = tagify(merge_list(resolved_genres["ko"], trans_res.get("genres_ko", []), ja_genres))
+                genres_en = tagify(merge_list(resolved_genres["en"], trans_res.get("genres_en", []), ja_genres))
+                genres_zh_cn = tagify(
+                    merge_list(resolved_genres["zh_cn"], trans_res.get("genres_zh_cn", []), ja_genres)
+                )
+                genres_zh_tw = tagify(
+                    merge_list(resolved_genres["zh_tw"], trans_res.get("genres_zh_tw", []), ja_genres)
+                )
 
-            def merge_val(db_val, ai_val, ja_val):
-                if db_val and db_val != ja_val: return db_val
-                return ai_val or db_val
+                def merge_val(db_val, ai_val, ja_val):
+                    if db_val and db_val != ja_val:
+                        return db_val
+                    return ai_val or db_val
 
-            ja_maker = resolved_maker["ja"]
-            maker_ko = merge_val(resolved_maker["ko"], trans_res.get("maker_ko"), ja_maker)
-            maker_en = merge_val(resolved_maker["en"], trans_res.get("maker_en"), ja_maker)
-            maker_zh_cn = merge_val(resolved_maker["zh_cn"], trans_res.get("maker_zh_cn"), ja_maker)
-            maker_zh_tw = merge_val(resolved_maker["zh_tw"], trans_res.get("maker_zh_tw"), ja_maker)
+                ja_maker = resolved_maker["ja"]
+                maker_ko = merge_val(resolved_maker["ko"], trans_res.get("maker_ko"), ja_maker)
+                maker_en = merge_val(resolved_maker["en"], trans_res.get("maker_en"), ja_maker)
+                maker_zh_cn = merge_val(resolved_maker["zh_cn"], trans_res.get("maker_zh_cn"), ja_maker)
+                maker_zh_tw = merge_val(resolved_maker["zh_tw"], trans_res.get("maker_zh_tw"), ja_maker)
 
-            row = upsert_jav_metadata(
-                session,
-                product_code=code,
-                merge_empty_only=True,
-                **titles,
-                original_title=original_title,
-                **synopses,
-                actors_ja=tagify(resolved_actors["ja"]),
-                actors_ko=actors_ko,
-                actors_romaji=actors_romaji,
-                actors_zh_cn=actors_zh_cn,
-                actors_zh_tw=actors_zh_tw,
-                genres_ja=tagify(resolved_genres["ja"]),
-                genres_ko=genres_ko,
-                genres_en=genres_en,
-                genres_zh_cn=genres_zh_cn,
-                genres_zh_tw=genres_zh_tw,
-                maker_ja=tagify(resolved_maker["ja"]),
-                maker_ko=maker_ko,
-                maker_en=maker_en,
-                maker_zh_cn=maker_zh_cn,
-                maker_zh_tw=maker_zh_tw,
-                cover_image_url=db_cover_url,
-                release_date=tagify(db_release_date),
-                actors=tagify(resolved_actors["ja"]),
-                title=titles["title_ko"],
-                synopsis=synopses["synopsis_ko"],
-                genres=genres_ko,
-                maker=maker_ko,
-                folder_path=stored_folder_path if stored_folder_path else None
-            )
+                row = upsert_jav_metadata(
+                    session,
+                    product_code=code,
+                    merge_empty_only=not bool(force_rebuild_story_context),
+                    **titles,
+                    original_title=original_title,
+                    **synopses,
+                    actors_ja=tagify(resolved_actors["ja"]),
+                    actors_ko=actors_ko,
+                    actors_romaji=actors_romaji,
+                    actors_zh_cn=actors_zh_cn,
+                    actors_zh_tw=actors_zh_tw,
+                    genres_ja=tagify(resolved_genres["ja"]),
+                    genres_ko=genres_ko,
+                    genres_en=genres_en,
+                    genres_zh_cn=genres_zh_cn,
+                    genres_zh_tw=genres_zh_tw,
+                    maker_ja=tagify(resolved_maker["ja"]),
+                    maker_ko=maker_ko,
+                    maker_en=maker_en,
+                    maker_zh_cn=maker_zh_cn,
+                    maker_zh_tw=maker_zh_tw,
+                    cover_image_url=db_cover_url,
+                    release_date=tagify(db_release_date),
+                    actors=tagify(resolved_actors["ja"]),
+                    title=titles["title_ko"],
+                    synopsis=synopses["synopsis_ko"],
+                    genres=genres_ko,
+                    maker=maker_ko,
+                    folder_path=stored_folder_path if stored_folder_path else None,
+                )
 
-            # 5. 자산 처리 (Assets - 표지 다운로드 등)
-            local_cover_path = await assets_handler.download_cover_image(db_cover_url, code)
-            if local_cover_path:
-                row.cover_image_local_path = local_cover_path
+                # 폴더/영상 경로가 확정되는 시점에 1회 마커 감지 후 DB 저장
+                try:
+                    from gui.library_data import path_contains_self_subtitle_marker, path_contains_mopa_marker
 
-            session.commit()
-            log_ts(f"✅ {code} 수집 및 DB 저장 완료 (다국어 메타 데이터 포함)")
+                    vp = path_obj if path_obj.is_file() else None
+                    row.is_hardcoded = bool(path_contains_self_subtitle_marker(vp, stored_folder_path, code))
+                    row.is_mopa = bool(path_contains_mopa_marker(vp, stored_folder_path))
+                except Exception:
+                    pass
+
+                # 5. 자산 처리 (Assets - 표지 다운로드 등)
+                with perf_span("harvest.assets.cover", product_code=code):
+                    local_cover_path = await assets_handler.download_cover_image(db_cover_url, code)
+                if local_cover_path:
+                    row.cover_image_local_path = local_cover_path
+
+                session.commit()
+                log_ts(f"✅ {code} 수집 및 DB 저장 완료 (다국어 메타 데이터 포함)")
+                # 주의: SQLAlchemy는 commit 후 객체 속성을 expire할 수 있어,
+                # session 종료 후 row.id 접근 시 DetachedInstanceError가 날 수 있다.
+                row_id = int(getattr(row, "id", 0) or 0)
 
             if _harvest_should_run_story_context(enable_story_context):
                 from javstory.translation.story_grok_module import run_story_grok_after_harvest_async
-                await run_story_grok_after_harvest_async(
-                    product_code=code,
-                    logger_func=log_ts,
-                    story_context_tier=story_context_tier,
-                    force_refresh=force_rebuild_story_context,
-                )
+                with perf_span("harvest.story_context", product_code=code):
+                    await run_story_grok_after_harvest_async(
+                        product_code=code,
+                        logger_func=log_ts,
+                        story_context_tier=story_context_tier,
+                        force_refresh=force_rebuild_story_context,
+                    )
 
             # [추가] 스냅샷 및 다이제스트 자동 추출 트리거
             if path_obj.is_file():
                 try:
                     from javstory.library.stills.snapshot_queue import snapshot_queue_manager
                     from javstory.library.stills.digest_queue import digest_queue_manager
-                    from javstory.config.app_config import MEDIA_ROOT
+                    from javstory.config.app_config import E_MEDIA_ROOT, MEDIA_ROOT
 
-                    out_dir = Path(MEDIA_ROOT) / code / "Snapshots"
+                    # 신규 HDD 루트 우선, 없으면 레거시 루트로 생성/사용
+                    base_root = Path(E_MEDIA_ROOT)
+                    try:
+                        base_root.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        base_root = Path(MEDIA_ROOT)
+
+                    out_dir = base_root / code / "Snapshots"
                     existing = list(out_dir.glob("snapshot_*.jpg"))
                     if len(existing) < 5: 
                         log_ts(f"📸 스냅샷 백그라운드 큐 등록 ({code})...")
+                        log_perf("snapshots.enqueue", product_code=code, out_dir=str(out_dir))
                         snapshot_queue_manager.push_job(path_obj, out_dir, product_code=code)
 
-                    digest_dir = Path(MEDIA_ROOT) / code / "digest"
+                    digest_dir = base_root / code / "Digest"
                     digest_dir.mkdir(parents=True, exist_ok=True)
                     digest_path = digest_dir / "digest.mp4"
                     if not digest_path.exists():
                         log_ts(f"🎥 다이제스트 백그라운드 큐 등록 ({code})...")
+                        log_perf("digest.enqueue", product_code=code, out=str(digest_path))
                         digest_queue_manager.push_job(path_obj, digest_path, product_code=code)
+
+                    # Golden Preview(WebP) 자동 큐 등록 (존재 시 스킵)
+                    try:
+                        from gui.models.preview_queue_model import PreviewQueueController
+                        pq = PreviewQueueController.instance()
+                        if pq:
+                            log_perf("preview.enqueue", product_code=code)
+                            pq.enqueue(code, str(path_obj))
+                    except Exception:
+                        pass
                 except Exception as e:
                     log_ts(f"⚠️ 추가 미디어 구성(스냅샷/다이제스트) 도중 오류: {e}")
 
-            return {"status": "success", "product_code": code, "row_id": row.id}
+            return {"status": "success", "product_code": code, "row_id": row_id}
     except Exception as e:
         log_ts(f"❌ {code} 처리 중 오류 발생: {e}")
         return {"error": str(e)}

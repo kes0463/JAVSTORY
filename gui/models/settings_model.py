@@ -22,6 +22,7 @@ class SettingsModel(QObject):
     themeModeChanged = Signal()
     isSystemDarkChanged = Signal()
     correctionProfileChanged = Signal()
+    harvestConcurrencyChanged = Signal()
     toastMessage = Signal(str, str)
 
     def __init__(self, parent=None):
@@ -42,7 +43,7 @@ class SettingsModel(QObject):
             pass
 
     def _load_values(self):
-        from javstory.config.app_config import OLLAMA_BASE_URL, MEDIA_ROOT
+        from javstory.config.app_config import OLLAMA_BASE_URL, E_MEDIA_ROOT
         try:
             from javstory.config import secrets_manager
             self._api_key = secrets_manager.get_openrouter_api_key() or ""
@@ -51,7 +52,7 @@ class SettingsModel(QObject):
         
         # 1. API 및 미디어
         self._ollama_url = os.environ.get("JAVSTORY_OLLAMA_URL", OLLAMA_BASE_URL)
-        self._media_root = os.environ.get("JAVSTORY_MEDIA_ROOT", str(MEDIA_ROOT))
+        self._media_root = os.environ.get("JAVSTORY_MEDIA_ROOT", str(E_MEDIA_ROOT))
         
         # 2. 모델 및 번역
         self._whisper_model = os.environ.get("JAVSTORY_WHISPER_MODEL", "large-v2")
@@ -62,6 +63,12 @@ class SettingsModel(QObject):
         self._grok_enabled = grok in ("1", "true", "yes", "on")
         dpi = os.environ.get("JAVSTORY_DPI_BYPASS_ENABLED", "0").strip().lower()
         self._dpi_bypass = dpi in ("1", "true", "yes", "on")
+        # Harvest 동시 실행 수(1~5)
+        try:
+            self._harvest_concurrency = int(os.environ.get("JAVSTORY_HARVEST_CONCURRENCY", "2"))
+        except ValueError:
+            self._harvest_concurrency = 2
+        self._harvest_concurrency = max(1, min(5, int(self._harvest_concurrency or 2)))
 
         # 4. 교정 (Correction) 모델
         self._correction_profile = os.environ.get("JAVSTORY_CORRECTION_PASS2_MODEL", "qwen/qwen3-235b-a22b-2507")
@@ -149,6 +156,21 @@ class SettingsModel(QObject):
         except Exception:
             return True
 
+    @Property(int, notify=harvestConcurrencyChanged)
+    def harvestConcurrency(self) -> int:
+        return int(self._harvest_concurrency)
+
+    @harvestConcurrency.setter  # type: ignore[attr-defined]
+    def harvestConcurrency(self, v: int):
+        try:
+            n = int(v)
+        except Exception:
+            n = 2
+        n = max(1, min(5, n))
+        if n != getattr(self, "_harvest_concurrency", 2):
+            self._harvest_concurrency = n
+            self.harvestConcurrencyChanged.emit()
+
     def _apply_mica_global(self):
         """변경된 테마에 맞춰 Mica 효과 재적용."""
         if sys.platform != "win32": return
@@ -197,6 +219,7 @@ class SettingsModel(QObject):
         set_env_runtime_value("JAVSTORY_STORY_ANALYSIS_ENABLED", "1" if self._grok_enabled else "0")
         set_env_runtime_value("JAVSTORY_CORRECTION_PASS2_MODEL", self._correction_profile)
         set_env_runtime_value("JAVSTORY_DPI_BYPASS_ENABLED", "1" if self._dpi_bypass else "0")
+        set_env_runtime_value("JAVSTORY_HARVEST_CONCURRENCY", str(int(self._harvest_concurrency or 2)))
 
         # DPI 우회 연결
         try:

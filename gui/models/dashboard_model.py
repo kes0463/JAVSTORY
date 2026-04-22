@@ -180,11 +180,15 @@ class DashboardModel(QObject):
             from javstory.harvest.database import get_db_session, JAVMetadata
             session = get_db_session()
             try:
-                rows = session.query(JAVMetadata).filter_by(analysis_status="pending").all()
-                items = [
-                    {"sku": r.product_code, "title": (r.title or r.product_code)[:60]}
-                    for r in rows
-                ]
+                # 3초마다 full-scan은 부담이 큼: 필요한 컬럼만 + 상한 + 최신순 정렬
+                rows = (
+                    session.query(JAVMetadata.product_code, JAVMetadata.title)
+                    .filter_by(analysis_status="pending")
+                    .order_by(JAVMetadata.updated_at.desc())
+                    .limit(200)
+                    .all()
+                )
+                items = [{"sku": (pc or ""), "title": (title or pc or "")[:60]} for pc, title in (rows or [])]
             finally:
                 session.close()
             old_count = self._pending_model.rowCount()
@@ -193,3 +197,39 @@ class DashboardModel(QObject):
                 self.pendingCountChanged.emit()
         except Exception:
             pass
+
+    @Slot(str)
+    def cancelPending(self, sku: str) -> None:
+        """대기 중인 수집 작업을 취소(DB 상태 변경)."""
+        try:
+            from javstory.harvest.database import get_db_session, JAVMetadata
+            session = get_db_session()
+            try:
+                row = session.query(JAVMetadata).filter_by(product_code=sku).first()
+                if row:
+                    row.analysis_status = "none"
+                    session.commit()
+                    self.logMessage.emit(f"[Dashboard] cancelled pending task: {sku}")
+            finally:
+                session.close()
+            self._poll_queue()
+        except Exception as e:
+            self.logMessage.emit(f"[Dashboard] failed to cancel {sku}: {e}")
+
+    @Slot()
+    def clearAllPending(self) -> None:
+        """모든 대기 중인 수집 작업을 취소."""
+        try:
+            from javstory.harvest.database import get_db_session, JAVMetadata
+            session = get_db_session()
+            try:
+                rows = session.query(JAVMetadata).filter_by(analysis_status="pending").all()
+                for row in rows:
+                    row.analysis_status = "none"
+                session.commit()
+                self.logMessage.emit(f"[Dashboard] cleared all {len(rows)} pending tasks")
+            finally:
+                session.close()
+            self._poll_queue()
+        except Exception as e:
+            self.logMessage.emit(f"[Dashboard] failed to clear pending: {e}")

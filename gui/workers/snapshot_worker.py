@@ -1,5 +1,5 @@
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal as pyqtSignal
 from pathlib import Path
 import os
 import json
@@ -24,16 +24,25 @@ class SnapshotWorker(QThread):
                 return
 
             self.output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # 기존 snapshot_*.jpg 정리
-            for f in self.output_dir.glob("snapshot_*.jpg"):
-                try: os.remove(f)
-                except: pass
-
             from javstory.library.stills.extract import extract_snapshots_auto_adaptive, probe_video_duration_seconds, suggest_snapshot_target_count
+            from javstory.utils.derived_cache import is_up_to_date, mark_up_to_date
+            from javstory.utils.perf_log import perf_span
             
             dur = probe_video_duration_seconds(self.video_path)
             self.target_count = suggest_snapshot_target_count(dur)
+
+            meta_path = self.output_dir / ".snapshot.meta.json"
+            params = {"prefix": "snapshot", "quality": 85}
+
+            existing = list(self.output_dir.glob("snapshot_*.jpg"))
+            if len(existing) >= int(self.target_count) and is_up_to_date(
+                meta_path=meta_path,
+                inputs={"video": self.video_path},
+                params=params,
+            ):
+                self.progress.emit(self.target_count, self.target_count)
+                self.finished.emit(True, f"스냅샷은 이미 최신입니다. ({len(existing)}개)")
+                return
 
             # 진행률 콜백 (FFmpeg 로그 파싱 데이터 전달)
             def on_progress(percent: int):
@@ -41,15 +50,23 @@ class SnapshotWorker(QThread):
                 self.progress.emit(current, self.target_count)
 
             # [핵심] 핵심 엔진 호출 (내부에서 CUDA 하드웨어 가속 사용)
-            res = extract_snapshots_auto_adaptive(
-                self.video_path, 
-                self.output_dir, 
-                prefix="snapshot", 
-                quality=85,
-                progress_callback=on_progress
-            )
+            with perf_span(
+                "snapshots.extract",
+                product_code=self.product_code,
+                video=str(self.video_path),
+                out_dir=str(self.output_dir),
+                target_count=int(self.target_count),
+            ):
+                res = extract_snapshots_auto_adaptive(
+                    self.video_path,
+                    self.output_dir,
+                    prefix="snapshot",
+                    quality=85,
+                    progress_callback=on_progress,
+                )
             
             if res:
+                mark_up_to_date(meta_path=meta_path, inputs={"video": self.video_path}, params=params)
                 self.progress.emit(self.target_count, self.target_count)
                 self.finished.emit(True, f"{len(res)}개의 스냅샷을 CUDA 가속으로 추출 완료했습니다.")
             else:
